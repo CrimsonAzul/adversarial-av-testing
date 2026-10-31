@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# large or regenerable run outputs; summaries and reports are committed explicitly
+runs/
+*.zip
+*.mp4
+*.gif
+STOP
+PAUSE
