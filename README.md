@@ -41,6 +41,8 @@ avtest/severity.py     the shared objective every adversary maximises
 avtest/adversaries/    random, CMA-ES, Bayesian optimisation, RL (PPO scenario generator)
 avtest/search.py       resumable search run with an exact evaluation budget
 avtest/stats.py        discovery curves, unique failure cells, bootstrap and Wilson intervals
+avtest/recording.py    top-down GIF + keyframe recordings with outcome overlays
+avtest/progress.py     driver validation panel, showcase recordings and progress charts
 scripts/               pretrain_bc, train_driver, qualify, run_search, rq4, report, inspect_scenario, calibrate_references
 ```
 

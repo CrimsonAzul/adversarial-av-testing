@@ -233,10 +233,9 @@ class AVTestEnv(MetaDriveEnv):
 
         MetaDrive's default also ends the episode on any solid white line. That is a traffic
         violation, not a safety failure, and it makes reference drivers fail on harmless lane
-        changes near ramps (docs/LOG.md, 2026-10-31). White-line crossings are counted in telemetry.
+        changes near ramps (docs/LOG.md, 2026-10-31). White-line crossings are counted in telemetry
+        (once per step, in ``step``; MetaDrive calls this method from both reward and termination).
         """
-        if vehicle.on_white_continuous_line and vehicle is self.agent:
-            self.telemetry["white_line_steps"] = self.telemetry.get("white_line_steps", 0) + 1
         return (not vehicle.on_lane) or vehicle.crash_sidewalk or vehicle.on_yellow_continuous_line
 
     def load(self, scenario: sc.Scenario):
@@ -266,6 +265,8 @@ class AVTestEnv(MetaDriveEnv):
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         self._update_telemetry()
+        if self.agent.on_white_continuous_line:
+            self.telemetry["white_line_steps"] += 1
         self._positions.append(np.asarray(self.agent.position))
         stuck = (len(self._positions) > STUCK_WINDOW and not info.get("arrive_dest")
                  and np.linalg.norm(self._positions[-1] - self._positions[-1 - STUCK_WINDOW]) < STUCK_DISTANCE_M)

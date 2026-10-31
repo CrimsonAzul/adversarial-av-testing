@@ -31,7 +31,11 @@ def main() -> None:
     from avtest.evaluate import Evaluator
 
     if args.check:
-        sut, tier, budget, seeds_, methods = ROOT / "runs/driver/d1_check/model_best.zip", "T2", 24, (101,), ("rl", "cmaes")
+        candidates = [ROOT / "runs/driver" / f"d1_{kind}/model_best.zip" for kind in ("bccheck", "check")]
+        sut = next((c for c in candidates if c.exists()), None)
+        if sut is None:
+            raise SystemExit("run scripts.train_driver --name d1 --check first")
+        tier, budget, seeds_, methods = "T2", 28, (101,), METHODS
         root = ROOT / "runs/search_check"
     else:
         qualified = ROOT / "models/QUALIFIED.json"

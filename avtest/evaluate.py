@@ -65,6 +65,14 @@ def evaluate_one(task: dict) -> dict:
             "episodes": 1 + (replay is not None) + len(refs), "wall_s": time.time() - started}
 
 
+def record_one(task: dict) -> dict:
+    """Render one episode to <task["path"]>.gif / _keyframes.png with the SUT or a named reference."""
+    from .recording import record_episode
+    scenario = sc.decode(np.asarray(task["theta"]), seeds.check(task["map_seed"], task["split"]), task["tier"])
+    drivers = {"sut": _worker["sut"], **{d.name: d for d in _worker["references"]}}
+    return record_episode(_worker["env"], scenario, drivers[task["driver"]], Path(task["path"]), task["title"])
+
+
 class Evaluator:
     def __init__(self, sut_path: Path | None, tier: str, workers: int = 4, references: bool = True,
                  all_references: bool = False):
@@ -78,6 +86,11 @@ class Evaluator:
                   "references": self.references, "all_references": self.all_references}
                  for t, s in zip(np.asarray(thetas), map_seeds)]
         return self.pool.map(evaluate_one, tasks, chunksize=1)
+
+    def record(self, items: list[dict]) -> list[dict]:
+        """Record episodes in parallel. Each item: theta, map_seed, split, driver, path, title."""
+        tasks = [dict(item, tier=self.tier, theta=list(map(float, item["theta"]))) for item in items]
+        return self.pool.map(record_one, tasks, chunksize=1)
 
     def close(self):
         self.pool.close()

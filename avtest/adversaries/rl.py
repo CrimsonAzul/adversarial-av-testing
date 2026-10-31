@@ -68,6 +68,8 @@ class LockstepDesignEnv(VecEnv):
                  budget: int, history: History, cell: Callable[[np.ndarray], tuple], used: int = 0):
         self.dim, self.evaluate, self.budget, self.history, self.cell = dim, evaluate, budget, history, cell
         self.used = used
+        self.render_mode = None
+        self.rewards: list[float] = []          # rewards since the last diagnostics() call
         obs_dim = 2 + 2 * dim + 3 * dim * BINS
         super().__init__(num_envs, gym.spaces.Box(-1.0, 1.0, (obs_dim,), np.float32),
                          gym.spaces.Box(-ACTION_LIMIT, ACTION_LIMIT, (1,), np.float32))
@@ -102,6 +104,7 @@ class LockstepDesignEnv(VecEnv):
             for i, (theta, row) in enumerate(zip(thetas, rows)):
                 cell = self.cell(theta)
                 rewards[i] = row["score"] + NOVELTY_WEIGHT * self.history.novelty(cell)
+                self.rewards.append(float(rewards[i]))
                 self.history.add(theta, row["score"], row["valid_failure"], cell)
                 infos[i] = {"terminal_observation": self._obs()[i], "episode": {"r": float(rewards[i]), "l": self.dim}}
             self.used += len(rows)
@@ -159,6 +162,17 @@ class RLAdversary:
         self.model.learn(total_timesteps=self.model.n_steps * self.workers, reset_num_timesteps=False,
                          progress_bar=False)
         self.updates += 1
+
+    def diagnostics(self) -> dict:
+        """Learning-curve numbers for the last update (reward includes the novelty bonus)."""
+        values = self.model.logger.name_to_value
+        out = {"mean_reward": float(np.mean(self.env.rewards)) if self.env.rewards else None,
+               "action_std": float(np.exp(self.model.policy.log_std.detach().cpu().numpy()).mean())}
+        for key in ("approx_kl", "clip_fraction", "entropy_loss", "value_loss", "explained_variance"):
+            if f"train/{key}" in values:
+                out[key] = float(values[f"train/{key}"])
+        self.env.rewards = []
+        return out
 
     def save(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True)

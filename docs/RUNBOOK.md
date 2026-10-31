@@ -8,12 +8,23 @@ Times are measured on this laptop (about 80 simulator steps/s per process with t
 
 | When | Step | Time |
 |---|---|---|
-| Night 1 | 1a imitation warm start, then 1b PPO | 1–1.5 h + rest of night |
+| Night 1 | 1a imitation warm start, then 1b PPO | 1.5–2 h + rest of night |
 | Nights 2–4 | 1b PPO (same command each night) | 8 h each |
 | ~Nov 5 | 2 qualification | 1 h per tier tested |
 | If it fails | more 1b, then 2 with `--attempt 2` | until Nov 14 at the latest (DESIGN.md rule) |
 | Next 2 nights | 3 search runs | ~12 h total |
 | Then | 4 RQ4 + report | ~1.5 h |
+
+## Where to watch progress
+
+| Stage | Look at | Updated |
+|---|---|---|
+| Imitation warm start | `runs/driver/d1/bc_progress.png`, `recordings/bc_round_XX/*.gif` | every round |
+| PPO training | `runs/driver/d1/progress.png`, `recordings/steps_XXXXXXXXXX/*.gif` | every 1M steps |
+| Search runs | `runs/search/<method>_s<seed>/progress.png`, `recordings/eval_XXXX_sut.gif` + the reference that avoided it | every 50 evaluations / each new kind of failure |
+| RL generator learning | `runs/search/rl_s<seed>/rl/updates.jsonl` (also the 3rd panel of its progress.png) | every PPO update (24 evaluations) |
+
+The three driver showcase GIFs (lead_brake, obstacle, cut_in) are the same scenarios at every checkpoint, so they show the same situations getting better.
 
 ## 0. Check the pipeline (about 5 minutes)
 
@@ -21,13 +32,13 @@ Times are measured on this laptop (about 80 simulator steps/s per process with t
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## 1a. Imitation warm start (about 1–1.5 hours, once)
+## 1a. Imitation warm start (about 1.5–2 hours, once)
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.pretrain_bc --name d1
 ```
 
-Each round prints the student's success rate when it drives (rounds 1–5). Rising numbers mean the warm start is working. Output: `runs/driver/d1/model_last.zip`.
+Each round prints the action error and validation success on the 200-scene panel, overall and per event. Rising validation means the warm start is working. If it is interrupted, the same command resumes at the last finished round. Output: `runs/driver/d1/model_last.zip`.
 
 ## 1b. PPO training (several nights)
 
@@ -35,7 +46,7 @@ Each round prints the student's success rate when it drives (rounds 1–5). Risi
 .\.venv\Scripts\python.exe -m scripts.train_driver --name d1 --hours 8
 ```
 
-It continues from the warm start. Every 500k steps it prints validation success on 200 held-out scenes and keeps the best checkpoint as `runs/driver/d1/model_best.zip`. Repeat each night until validation success is clearly above 98% or has levelled off.
+It continues from the warm start: first 300k steps of value-network warm-up (printed as "critic warm-up"), then PPO. Every 1M steps it prints training and validation success and keeps the best checkpoint as `runs/driver/d1/model_best.zip`. At about 400 steps/s, an 8-hour night is about 11M steps. Repeat each night until validation success is clearly above 98% or has levelled off.
 
 ## 2. Qualify the driver (about 1 hour per tier)
 

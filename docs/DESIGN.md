@@ -45,10 +45,10 @@ A held-out panel of 500 scenarios per tier, drawn uniformly from θ with map see
 
 The SUT is an MLP policy (256×256) on MetaDrive's lidar-and-state observation (259 values) with continuous steering and throttle. It is trained in two stages:
 
-1. **Imitation warm start (DAgger).** The cautious-IDM reference labels every visited state; the student drives from round 1 on (5 rounds × 600 episodes over T3). Reason: PPO from scratch on lidar typically reaches 60–80% success in MetaDrive with traffic, far below the gate, and the deadline allows about four nights of training. Disclosure: the teacher is also a reference driver. Avoidability needs any one of three references, so this cannot make a failure look valid; it can make the SUT share some of the teacher's blind spots.
-2. **PPO fine-tuning** (Stable-Baselines3) with uniform θ over T3, train-split seeds, and a curriculum on event intensity, offset and relative speed during the first 30% of the step target.
+1. **Imitation warm start (DAgger).** The cautious-IDM reference labels every visited state; the student drives from round 1 on (5 rounds × 600 episodes over T3, every 2nd step kept). The actor's mean action is regressed onto the teacher's actions (mean squared error); exploration noise is then set to σ = e⁻¹ ≈ 0.37 for PPO. Reason: PPO from scratch on lidar typically reaches 60–80% success in MetaDrive with traffic, far below the gate, and the deadline allows about four nights of training. Disclosure: the teacher is also a reference driver. Avoidability needs any one of three references, so this cannot make a failure look valid; it can make the SUT share some of the teacher's blind spots.
+2. **PPO fine-tuning** (Stable-Baselines3) with uniform θ over T3, train-split seeds, and a curriculum on event intensity, offset and relative speed during the first 30% of the step target. After the warm start, the first 300k steps train only the value network with the policy frozen, because updates driven by an untrained critic can undo imitation; afterwards `target_kl = 0.02` bounds each policy update.
 
-Crash, off-road and stuck penalties are 10, and success earns 10 (MetaDrive's driving and speed rewards otherwise). Checkpoints are selected on a fixed validation panel (val split, 200 scenes), never on the qualification panel. Training writes resumable checkpoints so it runs in overnight sessions.
+Crash, off-road and stuck penalties are 10, and success earns 10 (MetaDrive's driving and speed rewards otherwise). Checkpoints are selected on a fixed validation panel (val split, 200 scenes, every 1M steps and after every imitation round), never on the qualification panel. Training writes resumable checkpoints so it runs in overnight sessions. Progress is recorded on three fixed showcase scenarios (one per event type) at every validation, so the recordings show the same situations improving.
 
 ## Reference drivers and validity
 
@@ -60,7 +60,7 @@ All methods search the same θ space through the same evaluator and are charged 
 
 - **Random:** θ ~ U[0,1]^d.
 - **CMA-ES:** `cma`, population 12, σ₀ = 0.3, restarts on stagnation.
-- **BO:** Gaussian process (Matérn 5/2) with expected improvement, 20 random initial points, refit every 10 evaluations, batch proposals via kriging believer.
+- **BO:** Gaussian process (Matérn 5/2 + noise) with expected improvement, 20 random initial points, kernel hyperparameters re-optimised every 10 evaluations (fixed in between), the GP refit on at most 400 points before every proposal, batch proposals via kriging believer.
 - **RL adversary (contribution):** PPO generator that proposes θ given a coverage-and-history observation. Reward: a bounded failure-severity score (valid failure = 1, otherwise near-miss shaping from minimum time-to-collision and route completion), a novelty bonus for unexplored parameter cells, and a penalty for unavoidable proposals. The same continuous severity score is the objective for CMA-ES and BO, so all methods optimise the same quantity.
 
 Budgets: 1,000 evaluations per run, 3 seeds per method (101, 202, 303). This is sized for overnight sessions before the end-of-November deadline and is revised only from measured timing, before any comparison run.

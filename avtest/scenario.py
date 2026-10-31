@@ -120,6 +120,14 @@ def cell(theta, tier: str) -> tuple:
     return tuple(min(int(x * p.bins(tier)), p.bins(tier) - 1) for p, x in zip(PARAMS, theta))
 
 
+def with_event(theta, event: str, tier: str) -> np.ndarray:
+    """θ with its event coordinate moved to the centre of ``event``'s bin (other values unchanged)."""
+    theta = np.array(theta, dtype=float)
+    events = TIERS[tier]["events"]
+    theta[[p.name for p in PARAMS].index("event")] = (events.index(event) + 0.5) / len(events)
+    return theta
+
+
 def sample(rng: np.random.Generator, n: int) -> np.ndarray:
     """Uniform θ: the qualification distribution and the random-search proposal."""
     return rng.random((n, DIM))

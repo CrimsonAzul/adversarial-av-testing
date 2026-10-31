@@ -29,8 +29,9 @@ def load_runs(folder: Path) -> dict[str, dict[int, dict]]:
     for config_path in sorted(folder.glob("*/config.json")):
         config = read_json(config_path)
         rows = JsonlLog(config_path.parent / "evaluations.jsonl").read()
+        timing = JsonlLog(config_path.parent / "timing.jsonl").read()
         runs.setdefault(config["method"], {})[config["seed"]] = {
-            "config": config, "rows": rows, "done": (config_path.parent / "done.json").exists()}
+            "config": config, "rows": rows, "timing": timing, "done": (config_path.parent / "done.json").exists()}
     return runs
 
 
@@ -40,8 +41,8 @@ def fmt(t) -> str:
 
 def search_tables(runs: dict, out: Path, budget: int) -> list[str]:
     lines = ["## RQ1–RQ3: search runs", "",
-             "| method | seed | evaluations | valid failures | unique failure cells | per 1,000 evals | AUC | first failure | invalid share | entropy (bits) |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| method | seed | evaluations | valid failures | unique failure cells | per 1,000 evals | AUC | first failure | invalid share | entropy (bits) | hours (adversary share) |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     table = []
     for method in [m for m in ORDER if m in runs]:
         for seed, run in sorted(runs[method].items()):
@@ -53,11 +54,15 @@ def search_tables(runs: dict, out: Path, budget: int) -> list[str]:
                    "per_1000": 1000 * unique / n if n else float("nan"), "auc": stats.auc(rows, budget),
                    "first_failure": stats.first_failure(rows), "invalid_share": stats.invalid_fraction(rows),
                    "entropy_bits": stats.cell_entropy(rows),
-                   "wall_hours": sum(r.get("wall_s", 0) for r in rows) / 3600}
+                   "simulator_hours": sum(t["eval_s"] for t in run["timing"]) / 3600,
+                   "adversary_hours": sum(t["adversary_s"] for t in run["timing"]) / 3600}
+            row["wall_hours"] = row["simulator_hours"] + row["adversary_hours"]
             table.append(row)
+            hours = (f"{row['wall_hours']:.2f} ({row['adversary_hours'] / row['wall_hours']:.0%})"
+                     if row["wall_hours"] else "n/a")
             lines.append(f"| {method} | {seed}{'' if run['done'] else ' (unfinished)'} | {n} | {row['valid_failures']} | "
                          f"{unique} | {row['per_1000']:.1f} | {row['auc']:.2f} | {row['first_failure'] or 'none'} | "
-                         f"{row['invalid_share']:.2f} | {row['entropy_bits']:.2f} |")
+                         f"{row['invalid_share']:.2f} | {row['entropy_bits']:.2f} | {hours} |")
     if table:
         with (out / "search_runs.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(table[0]))

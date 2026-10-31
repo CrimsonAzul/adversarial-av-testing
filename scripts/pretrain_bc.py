@@ -1,16 +1,21 @@
 """Warm start for the driver: imitation of the cautious-IDM teacher with DAgger, before PPO.
 
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d1                 # ~1–1.5 h
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d1 --check         # 2-minute pipeline check
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d1                 # ~1.5–2 h, resumable
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d1 --check         # few-minute pipeline check
 
 The student sees only the lidar-and-state observation, the same one PPO uses. The teacher
 (MetaDrive IDM with cautious settings, avtest.drivers.CautiousIDMDriver) reads privileged
 map state and labels every visited state with the action it would take.
 Round 0 lets the teacher drive. In rounds 1..R the student drives, with the teacher taking
 over with probability β = 0.5^round each episode, while the teacher still labels every state
-(DAgger; Ross, Gordon & Bagnell 2011). The policy is the PPO actor itself, trained by
-maximum likelihood of the teacher's actions on all data so far, so scripts.train_driver
-continues with PPO from runs/driver/<name>/model_last.zip.
+(DAgger; Ross, Gordon & Bagnell 2011). The policy is the PPO actor itself, trained by regressing
+its mean action onto the teacher's actions on all data so far, so scripts.train_driver continues
+with PPO from runs/driver/<name>/model_last.zip.
+
+Data: every 2nd step is kept (consecutive 0.1 s frames are nearly identical) and stored as
+float16 shards under data/, one per round, so a crash resumes at the last finished round.
+After every round: validation on the fixed 200-scene panel and recordings of the three
+showcase scenarios (avtest.progress), logged to bc_log.jsonl and charted in bc_progress.png.
 
 Disclosure: the teacher is also one of the three reference drivers. Avoidability needs any
 one reference to complete a scene, so this cannot make a failure look valid; it can only
@@ -20,15 +25,15 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
-from pathlib import Path
 import time
 
 import torch
 import numpy as np
 
-from avtest.records import JsonlLog, ROOT, write_json
+from avtest.records import JsonlLog, ROOT, read_json, write_json
 
 TIER = "T3"
+KEEP_EVERY = 2
 
 
 def _collect(task: dict) -> dict:
@@ -42,46 +47,57 @@ def _collect(task: dict) -> dict:
     env = AVTestEnv()
     teacher = CautiousIDMDriver()
     student = PPO.load(task["model"], device="cpu") if task["model"] else None
-    obs_list, act_list, outcomes, steps = [], [], [], 0
+    obs_list, act_list, outcomes = [], [], []
     for _ in range(task["episodes"]):
         env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
         obs, _ = env.reset()
         teacher.start(env)
         teacher_drives = student is None or rng.random() < task["beta"]
+        step = 0
         while True:
-            label = np.asarray(teacher.act(env, obs), dtype=np.float32)
-            obs_list.append(obs.astype(np.float32))
-            act_list.append(np.clip(label, -1, 1))
+            label = np.clip(np.asarray(teacher.act(env, obs), dtype=np.float32), -1, 1)
+            if step % KEEP_EVERY == 0:
+                obs_list.append(obs.astype(np.float16))
+                act_list.append(label)
             action = label if teacher_drives else student.predict(obs, deterministic=True)[0]
             obs, _, term, trunc, info = env.step(action)
-            steps += 1
+            step += 1
             if term or trunc:
                 outcomes.append((bool(teacher_drives), info["outcome"]))
                 break
     env.close()
-    return {"obs": np.asarray(obs_list), "act": np.asarray(act_list), "outcomes": outcomes, "steps": steps}
+    return {"obs": np.asarray(obs_list, dtype=np.float16), "act": np.asarray(act_list, dtype=np.float32),
+            "outcomes": outcomes}
 
 
-def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> float:
-    """Maximum likelihood of teacher actions under the PPO actor (value head untouched)."""
+def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict:
+    """Regress the PPO actor's mean action onto the teacher's actions (mean squared error).
+
+    The teacher is deterministic, so this is plain behaviour cloning of the action mean; the
+    exploration noise (log_std) is set separately before PPO, and the value head is untouched.
+    """
     policy = model.policy
-    params = list(policy.mlp_extractor.policy_net.parameters()) + list(policy.action_net.parameters()) \
-        + [policy.log_std] + list(policy.features_extractor.parameters())
-    optimizer = torch.optim.Adam(params, lr=3e-4)
+    params = [*policy.mlp_extractor.policy_net.parameters(), *policy.action_net.parameters(),
+              *policy.features_extractor.parameters()]
+    optimizer = torch.optim.Adam(params, lr=1e-3)
     gen = torch.Generator().manual_seed(seed)
-    X, Y = torch.as_tensor(obs), torch.as_tensor(act)
-    loss_value = float("nan")
+    Y = torch.as_tensor(act)
+    mse = mae = 0.0
     for _ in range(epochs):
-        order = torch.randperm(len(X), generator=gen)
-        for i in range(0, len(X), 512):
+        order = torch.randperm(len(Y), generator=gen)
+        total_mse = total_mae = 0.0
+        for i in range(0, len(order), 512):
             idx = order[i:i + 512]
-            _, log_prob, _ = policy.evaluate_actions(X[idx], Y[idx])
-            loss = -log_prob.mean()
+            x = torch.as_tensor(obs[idx.numpy()].astype(np.float32))
+            mean = policy.action_net(policy.mlp_extractor.forward_actor(policy.extract_features(x)))
+            loss = torch.nn.functional.mse_loss(mean, Y[idx])
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            loss_value = loss.item()
-    return loss_value
+            total_mse += loss.item() * len(idx)
+            total_mae += (mean.detach().clamp(-1, 1) - Y[idx]).abs().mean().item() * len(idx)
+        mse, mae = total_mse / len(order), total_mae / len(order)
+    return {"mse": mse, "action_mae": mae}
 
 
 def main() -> None:
@@ -95,27 +111,40 @@ def main() -> None:
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
+    from avtest import progress
     import gymnasium as gym
 
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else ""))
+    panel = progress.VAL_PANEL
     if args.check:
-        args.rounds, args.episodes, args.workers, args.epochs = 1, 4, 2, 1
+        args.rounds, args.episodes, args.workers, args.epochs, panel = 1, 4, 2, 1, 4
     if (out / "train_log.jsonl").exists():
         raise SystemExit(f"{out} already has PPO training; pretrain into a new --name")
-    out.mkdir(parents=True, exist_ok=True)
+    settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
+                "tier": TIER, "teacher": "idm_cautious", "val_panel": panel}
+    if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
+        raise SystemExit(f"{out} was started with other settings; use a new --name")
+    write_json(out / "bc_config.json", settings)
     log = JsonlLog(out / "bc_log.jsonl")
+    done_rounds = [r["round"] for r in log.read()]
 
     class Spaces(gym.Env):                              # spaces only, to build the PPO policy offline
         observation_space = gym.spaces.Box(-0.0, 1.0, (259,), np.float32)
         action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
 
-    model = PPO("MlpPolicy", Spaces(), n_steps=DEFAULTS["n_steps"], batch_size=DEFAULTS["batch_size"],
-                n_epochs=DEFAULTS["n_epochs"], learning_rate=DEFAULTS["learning_rate"], gamma=DEFAULTS["gamma"],
-                gae_lambda=DEFAULTS["gae_lambda"], clip_range=DEFAULTS["clip_range"], ent_coef=DEFAULTS["ent_coef"],
-                seed=DEFAULTS["seed"], device="cpu", policy_kwargs={"net_arch": {"pi": DEFAULTS["net"], "vf": DEFAULTS["net"]}})
-    data_obs, data_act = [], []
+    if done_rounds:
+        model = PPO.load(out / "model_last.zip", device="cpu")
+        print(f"resuming after round {done_rounds[-1]}", flush=True)
+    else:
+        model = PPO("MlpPolicy", Spaces(), n_steps=DEFAULTS["n_steps"], batch_size=DEFAULTS["batch_size"],
+                    n_epochs=DEFAULTS["n_epochs"], learning_rate=DEFAULTS["learning_rate"], gamma=DEFAULTS["gamma"],
+                    gae_lambda=DEFAULTS["gae_lambda"], clip_range=DEFAULTS["clip_range"], ent_coef=DEFAULTS["ent_coef"],
+                    target_kl=DEFAULTS["target_kl"], seed=DEFAULTS["seed"], device="cpu",
+                    policy_kwargs={"net_arch": {"pi": DEFAULTS["net"], "vf": DEFAULTS["net"]}})
     ctx = mp.get_context("spawn")
     for rnd in range(args.rounds + 1):
+        if rnd in done_rounds:
+            continue
         t0 = time.time()
         current = None if rnd == 0 else str(out / "model_last.zip")
         per = max(1, args.episodes // args.workers)
@@ -123,24 +152,36 @@ def main() -> None:
                  for w in range(args.workers)]
         with ctx.Pool(args.workers) as pool:
             results = pool.map(_collect, tasks)
-        for r in results:
-            data_obs.append(r["obs"])
-            data_act.append(r["act"])
-        obs, act = np.concatenate(data_obs), np.concatenate(data_act)
-        loss = fit(model, obs, act, args.epochs, rnd)
-        with torch.no_grad():                         # start PPO with modest exploration noise
+        shard = out / "data" / f"round_{rnd:02d}.npz"
+        shard.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(shard, obs=np.concatenate([r["obs"] for r in results]), act=np.concatenate([r["act"] for r in results]))
+        collect_s = time.time() - t0
+        shards = [np.load(out / "data" / f"round_{k:02d}.npz") for k in range(rnd + 1)]
+        obs = np.concatenate([s["obs"] for s in shards])
+        act = np.concatenate([s["act"] for s in shards])
+        n_samples = int(len(act))
+        fit_stats = fit(model, obs, act, args.epochs, rnd)
+        with torch.no_grad():                         # PPO later starts with modest exploration noise
             model.policy.log_std.fill_(-1.0)
         model.save(out / "model_last.zip")
+        (out / "checkpoints").mkdir(exist_ok=True)
+        model.save(out / "checkpoints" / f"bc_round_{rnd:02d}.zip")
+        del obs, act, shards
         outcomes = [o for r in results for o in r["outcomes"]]
-        student = [o for t, o in outcomes if not t]
-        log.append({"round": rnd, "samples": int(len(obs)), "nll": loss, "wall_s": time.time() - t0,
-                    "teacher_episodes": sum(t for t, _ in outcomes),
-                    "student_episodes": len(student),
-                    "student_success": (sum(o == "success" for o in student) / len(student)) if student else None})
-        print(f"round {rnd}: {len(obs):,} samples, NLL {loss:.3f}, student success "
-              f"{log.read()[-1]['student_success']}, {time.time() - t0:.0f}s", flush=True)
-    write_json(out / "bc_done.json", {"rounds": args.rounds, "samples": int(len(obs))})
-    print(f"warm start saved to {out / 'model_last.zip'}; continue with: python -m scripts.train_driver --name {args.name}")
+        rollout = [o for t, o in outcomes if not t]
+        report = progress.checkpoint_report(out / "model_last.zip", out, f"bc_round_{rnd:02d}", workers=min(4, args.workers),
+                                            panel=panel)
+        row = {"round": rnd, "samples": n_samples, **fit_stats, "collect_s": collect_s, "wall_s": time.time() - t0,
+               "teacher_episodes": sum(t for t, _ in outcomes), "student_rollouts": len(rollout),
+               "student_rollout_success": (sum(o == "success" for o in rollout) / len(rollout)) if rollout else None,
+               **report}
+        log.append(row)
+        progress.chart(log.read(), "round", "DAgger round", out / "bc_progress.png", f"{out.name}: imitation warm start")
+        print(f"round {rnd}: {row['samples']:,} samples | action error {fit_stats['action_mae']:.3f} | "
+              f"{progress.headline(report)} | {row['wall_s'] / 60:.1f} min", flush=True)
+    write_json(out / "bc_done.json", {"rounds": args.rounds, "final": log.read()[-1]})
+    print(f"warm start saved to {out / 'model_last.zip'}; recordings in {out / 'recordings'}; "
+          f"continue with: python -m scripts.train_driver --name {args.name}", flush=True)
 
 
 if __name__ == "__main__":
