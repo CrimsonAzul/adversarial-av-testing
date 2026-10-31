@@ -30,3 +30,4 @@ Everything below was measured on the author's laptop (i7-11370H, 16 GB) while it
   - `scripts.run_search --check`: the RL generator and CMA-ES ran 24 evaluations each with references and replays.
   - `scripts.report`: regenerated tables and figure from the logs.
   - `scripts.qualify --panel 8 --attempt 99`: FAIL, as expected for an untrained model; nothing frozen.
+- Published at the author's request: public repository https://github.com/CrimsonAzul/adversarial-av-testing (`main`). Run outputs under `runs/` are not committed. The qualified model and generated reports will be committed when they exist.
