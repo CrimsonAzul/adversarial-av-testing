@@ -1,9 +1,9 @@
 """Warm start for the driver: imitation of the cautious-IDM teacher with DAgger, before PPO.
 
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d1                 # ~1.5–2 h, resumable
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d1 --check         # few-minute pipeline check
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2                 # ~2–2.5 h, resumable
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2 --check         # few-minute pipeline check
 
-The student sees only the lidar-and-state observation, the same one PPO uses. The teacher
+The student sees lidar, its own state and the 4 nearest vehicles (avtest.sim), as PPO does. The teacher
 (MetaDrive IDM with cautious settings, avtest.drivers.CautiousIDMDriver) reads privileged
 map state and labels every visited state with the action it would take.
 Round 0 lets the teacher drive. In rounds 1..R the student drives, with the teacher taking
@@ -16,6 +16,7 @@ Data: every 2nd step is kept (consecutive 0.1 s frames are nearly identical) and
 float16 shards under data/, one per round, so a crash resumes at the last finished round.
 After every round: validation on the fixed 200-scene panel and recordings of the three
 showcase scenarios (avtest.progress), logged to bc_log.jsonl and charted in bc_progress.png.
+At the end the round with the best validation becomes model_last.zip, PPO's starting point.
 
 Disclosure: the teacher is also one of the three reference drivers. Avoidability needs any
 one reference to complete a scene, so this cannot make a failure look valid; it can only
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
+import shutil
 import time
 
 import torch
@@ -34,6 +36,7 @@ from avtest.records import JsonlLog, ROOT, read_json, write_json
 
 TIER = "T3"
 KEEP_EVERY = 2
+INITIAL_LOG_STD = -1.5
 
 
 def _collect(task: dict) -> dict:
@@ -103,7 +106,7 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--name", required=True)
-    p.add_argument("--rounds", type=int, default=5)
+    p.add_argument("--rounds", type=int, default=8)
     p.add_argument("--episodes", type=int, default=600, help="episodes per round")
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--epochs", type=int, default=10)
@@ -112,6 +115,7 @@ def main() -> None:
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
     from avtest import progress
+    from avtest.sim import OBS_DIM
     import gymnasium as gym
 
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else ""))
@@ -129,7 +133,7 @@ def main() -> None:
     done_rounds = [r["round"] for r in log.read()]
 
     class Spaces(gym.Env):                              # spaces only, to build the PPO policy offline
-        observation_space = gym.spaces.Box(-0.0, 1.0, (259,), np.float32)
+        observation_space = gym.spaces.Box(-0.0, 1.0, (OBS_DIM,), np.float32)
         action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
 
     if done_rounds:
@@ -161,8 +165,8 @@ def main() -> None:
         act = np.concatenate([s["act"] for s in shards])
         n_samples = int(len(act))
         fit_stats = fit(model, obs, act, args.epochs, rnd)
-        with torch.no_grad():                         # PPO later starts with modest exploration noise
-            model.policy.log_std.fill_(-1.0)
+        with torch.no_grad():                         # PPO later starts with small exploration noise (σ ≈ 0.22)
+            model.policy.log_std.fill_(INITIAL_LOG_STD)
         model.save(out / "model_last.zip")
         (out / "checkpoints").mkdir(exist_ok=True)
         model.save(out / "checkpoints" / f"bc_round_{rnd:02d}.zip")
@@ -179,8 +183,15 @@ def main() -> None:
         progress.chart(log.read(), "round", "DAgger round", out / "bc_progress.png", f"{out.name}: imitation warm start")
         print(f"round {rnd}: {row['samples']:,} samples | action error {fit_stats['action_mae']:.3f} | "
               f"{progress.headline(report)} | {row['wall_s'] / 60:.1f} min", flush=True)
-    write_json(out / "bc_done.json", {"rounds": args.rounds, "final": log.read()[-1]})
-    print(f"warm start saved to {out / 'model_last.zip'}; recordings in {out / 'recordings'}; "
+    # DAgger rolls out the latest student each round; PPO starts from the round that validated best
+    rows = log.read()
+    best = max(rows, key=lambda r: (r["val_success"], r["round"]))
+    shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_last.zip")
+    shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_best_bc.zip")
+    write_json(out / "bc_done.json", {"rounds": args.rounds, "best_round": best["round"],
+                                      "best_val_success": best["val_success"], "final": rows[-1]})
+    print(f"warm start: best round {best['round']} (validation {progress.pct(best['val_success'])}) saved as "
+          f"{out / 'model_last.zip'}; recordings in {out / 'recordings'}; "
           f"continue with: python -m scripts.train_driver --name {args.name}", flush=True)
 
 

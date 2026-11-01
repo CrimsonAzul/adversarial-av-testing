@@ -31,10 +31,10 @@ def main() -> None:
     from avtest.evaluate import Evaluator
 
     if args.check:
-        candidates = [ROOT / "runs/driver" / f"d1_{kind}/model_best.zip" for kind in ("bccheck", "check")]
-        sut = next((c for c in candidates if c.exists()), None)
-        if sut is None:
-            raise SystemExit("run scripts.train_driver --name d1 --check first")
+        candidates = sorted((ROOT / "runs/driver").glob("*check/model_best.zip"), key=lambda c: c.stat().st_mtime)
+        if not candidates:
+            raise SystemExit("run scripts.train_driver --name <name> --check first")
+        sut = candidates[-1]                           # the most recent check model
         tier, budget, seeds_, methods = "T2", 28, (101,), METHODS
         root = ROOT / "runs/search_check"
     else:

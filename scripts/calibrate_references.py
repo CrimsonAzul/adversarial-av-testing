@@ -2,8 +2,10 @@
 
     .venv\\Scripts\\python.exe -m scripts.calibrate_references --tier T2 --scenes 60
 
-Uses validation-split seeds. Reports per-reference and union success, by event type,
-and the timing per scene. Writes runs/calibration/<tier>/episodes.jsonl and summary.json.
+Uses validation-split seeds. Reports per-reference and union success, by event type, each
+reference's success on the scenes at least one reference completes (the quantity the 98%
+qualification gate applies to the SUT), and timing. Writes
+runs/calibration/<tier>_<scenes>/episodes.jsonl and summary.json (resumable).
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ def main() -> None:
     p.add_argument("--panel-seed", type=int, default=31)
     args = p.parse_args()
     from avtest.evaluate import Evaluator
-    out = ROOT / "runs/calibration" / args.tier
+    out = ROOT / "runs/calibration" / f"{args.tier}_{args.scenes}"
     log = JsonlLog(out / "episodes.jsonl")
     done = log.read()
     map_seeds = seeds.panel_seeds("val", args.scenes, args.panel_seed)
@@ -49,6 +51,9 @@ def main() -> None:
                "reference_outcomes": {n: dict(collections.Counter(r["references"][i]["outcome"] for r in rows))
                                       for i, n in enumerate(names)},
                "union_by_event": {k: [int(sum(v)), len(v)] for k, v in by_event.items()},
+               "per_reference_on_solvable": {n: float(np.mean([r["references"][i]["outcome"] == "success"
+                                                               for r in rows if r["avoidable"]]))
+                                             for i, n in enumerate(names)},
                "mean_scene_wall_s": float(np.mean([r["wall_s"] for r in rows])),
                "batch_wall_s": time.time() - t0}
     write_json(out / "summary.json", summary)

@@ -37,13 +37,26 @@ LEAD_RECOVERY_S = 2.0         # a braking lead vehicle waits this long at its lo
 LEAD_RECOVERY_ACCEL = 1.5
 TTC_LOOKAHEAD_M = 60.0
 
+# Reward (docs/LOG.md, 2026-11-01): a whole route earns ~15–20 progress points + 20 for arriving,
+# and every failure costs 30, so a crash always outweighs the progress made before it.
+# (Run d1 used MetaDrive's 1 point per metre against a 10-point crash penalty: speed paid
+# more than safety, and PPO learned to drive fast and crash.)
+PROGRESS_REWARD_PER_M = 0.05
+SPEED_REWARD = 0.02            # per step at maximum speed: keeps the driver from creeping into timeouts
+SUCCESS_REWARD = 20.0
+FAILURE_PENALTY = 30.0         # collision, off-road, stuck and timeout alike
+NEAREST_VEHICLES = 4           # object list: relative position/velocity of the 4 nearest vehicles
+OBS_DIM = 259 + 4 * NEAREST_VEHICLES
+
 BASE_CONFIG = dict(
     use_render=False, log_level=50, store_map=False, start_seed=0, num_scenarios=seeds.SPLITS["heldout"][1],
     map="SSS", traffic_density=0.0, accident_prob=0.0, random_traffic=False, random_lane_width=False,
     random_lane_num=False, horizon=HORIZON, crash_vehicle_done=True, crash_object_done=True,
-    out_of_road_done=True, success_reward=10.0, out_of_road_penalty=10.0, crash_vehicle_penalty=10.0,
-    crash_object_penalty=10.0, driving_reward=1.0, speed_reward=0.1,
-    vehicle_config={"lidar": {"num_lasers": 240, "distance": 50, "num_others": 0}},
+    out_of_road_done=True, success_reward=SUCCESS_REWARD, out_of_road_penalty=FAILURE_PENALTY,
+    crash_vehicle_penalty=FAILURE_PENALTY, crash_object_penalty=FAILURE_PENALTY,
+    crash_sidewalk_penalty=FAILURE_PENALTY, driving_reward=PROGRESS_REWARD_PER_M, speed_reward=SPEED_REWARD,
+    use_lateral_reward=True,
+    vehicle_config={"lidar": {"num_lasers": 240, "distance": 50, "num_others": NEAREST_VEHICLES}},
 )
 
 
@@ -272,11 +285,12 @@ class AVTestEnv(MetaDriveEnv):
                  and np.linalg.norm(self._positions[-1] - self._positions[-1 - STUCK_WINDOW]) < STUCK_DISTANCE_M)
         if stuck and not terminated:
             terminated = True
-            reward -= 10.0
         info["stuck"] = bool(stuck)
         info["outcome"] = outcome_from(info, stuck) if (terminated or truncated) else None
         if (terminated or truncated) and info["outcome"] is None:
             info["outcome"] = "timeout"
+        if info["outcome"] in ("stuck", "timeout"):        # MetaDrive only penalises crashes and off-road
+            reward = -FAILURE_PENALTY
         return obs, reward, terminated, truncated, info
 
     def _update_telemetry(self):

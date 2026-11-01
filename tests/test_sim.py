@@ -63,3 +63,38 @@ def test_recording_is_a_faithful_episode(env, tmp_path):
     recorded = record_episode(env, s, IDMDriver(), tmp_path / "clip", "test")
     assert (recorded["outcome"], recorded["steps"]) == (plain["outcome"], plain["steps"])
     assert (tmp_path / "clip.gif").stat().st_size > 10_000 and (tmp_path / "clip_keyframes.png").exists()
+
+
+def test_reward_makes_safety_dominate(env):
+    """Run d1's failure mode: speed paid more than safety. A safe success must out-score any failure."""
+    from avtest.drivers import CautiousIDMDriver
+    from avtest.sim import FAILURE_PENALTY, OBS_DIM
+
+    class Fixed:
+        def __init__(self, name, action):
+            self.name, self.action = name, action
+
+        def start(self, env):
+            pass
+
+        def act(self, env, obs):
+            return self.action
+
+    returns = {}
+    s = scene("lead_brake")
+    for driver in (CautiousIDMDriver(), Fixed("reckless", [0.0, 1.0]), Fixed("frozen", [0.0, -1.0])):
+        env.load(s)
+        obs, _ = env.reset()
+        assert obs.shape == (OBS_DIM,)
+        driver.start(env)
+        total = 0.0
+        while True:
+            obs, r, term, trunc, info = env.step(driver.act(env, obs))
+            total += r
+            if term or trunc:
+                break
+        returns[driver.name] = (info["outcome"], total)
+    assert returns["idm_cautious"][0] == "success" and returns["frozen"][0] == "stuck"
+    assert returns["reckless"][0] in ("collision", "offroad")
+    assert returns["idm_cautious"][1] > 30 > 0 > returns["reckless"][1]
+    assert returns["frozen"][1] == pytest.approx(-FAILURE_PENALTY, abs=0.5)
