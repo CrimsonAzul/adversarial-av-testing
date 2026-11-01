@@ -2,6 +2,8 @@
 
 Run each command from the project folder in PowerShell when the laptop is free (close heavy apps; every job uses all CPU cores). Every job resumes from where it stopped if you repeat the same command. To end a job early, create `PAUSE` in its run folder (it finishes the current chunk or batch, saves, and exits) or `STOP` (it exits immediately). After each step, add a line to [LOG.md](LOG.md), or ask Claude to read the generated files and log it.
 
+Before an overnight run: charger in, lid open, sleep set to Never on AC power, and Windows Update paused (Settings → Windows Update → Pause updates). Windows may restart for updates outside active hours, which on this laptop are 8:00–2:00, so between 2:00 and 8:00, in the middle of a run. A restart loses at most the current chunk; the same command resumes.
+
 Times are measured on this laptop (about 80 simulator steps/s per process with traffic).
 
 ## Suggested schedule (deadline: end of November)
@@ -9,7 +11,7 @@ Times are measured on this laptop (about 80 simulator steps/s per process with t
 | When | Step | Time |
 |---|---|---|
 | Night 1 (d1, done) | first attempt: far below the gate; reward error fixed | — |
-| Night 2 | 1a imitation warm start (d2, 5 rounds), then 1b PPO 5 h | ~3 h + 5 h |
+| Night 2 | 1a imitation warm start (d2, 5 rounds), then 1b PPO `--hours 5` | ~2.5 h + 5–6 h |
 | Nights 2–4 | 1b PPO (same command each night) | 8 h each |
 | ~Nov 5 | 2 qualification | 1 h per tier tested |
 | If it fails | more 1b, then 2 with `--attempt 2` | until Nov 14 at the latest (DESIGN.md rule) |
