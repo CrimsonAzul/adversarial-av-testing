@@ -2,10 +2,15 @@
 
     .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2                 # ~2–2.5 h, resumable
     .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2 --check         # few-minute pipeline check
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2 --pilot         # ~45 min learning pilot (real settings, fewer rounds)
 
-The student sees lidar, its own state and the 4 nearest vehicles (avtest.sim), as PPO does. The teacher
-(MetaDrive IDM with cautious settings, avtest.drivers.CautiousIDMDriver) reads privileged
-map state and labels every visited state with the action it would take.
+The student sees lidar, lane lines, road edges, its own state and the 4 nearest vehicles
+(avtest.sim), as PPO does. It outputs tactical decisions (lane command, throttle/brake;
+avtest.tactical), and a PID controller steers. The teacher (MetaDrive IDM with cautious
+settings) reads privileged map state; at every visited state it is labelled with the lane it
+steers for (left/keep/right of the ego's current lane) and its throttle/brake. The teacher drives
+through the same controller with those labels, which reproduces its own driving: 40/42 successes
+either way (docs/LOG.md, 2026-11-01).
 Round 0 lets the teacher drive. In rounds 1..R the student drives, with the teacher taking
 over with probability β = 0.5^round each episode, while the teacher still labels every state
 (DAgger; Ross, Gordon & Bagnell 2011). The policy is the PPO actor itself, trained by regressing
@@ -41,6 +46,7 @@ from avtest.records import JsonlLog, ROOT, read_json, write_json
 TIER = "T2"                  # see docs/LOG.md, 2026-11-01: reference ceiling check
 KEEP_EVERY = 2
 INITIAL_LOG_STD = -1.5
+LANE_CHANGE_WEIGHT = 10.0
 
 
 def _collect(task: dict) -> dict:
@@ -48,27 +54,29 @@ def _collect(task: dict) -> dict:
     th.set_num_threads(1)
     from stable_baselines3 import PPO
     from avtest import scenario as sc, seeds
-    from avtest.drivers import CautiousIDMDriver
+    from avtest import tactical
     from avtest.sim import OBS_DIM, AVTestEnv
     rng = np.random.default_rng(task["seed"])
     env = AVTestEnv()
-    teacher = CautiousIDMDriver()
     student = PPO.load(task["model"], device="cpu") if task["model"] else None
     obs_list, act_list, outcomes = [], [], []
     for _ in range(task["episodes"]):
         episode_obs, episode_act = [], []
         env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
         obs, _ = env.reset()
-        teacher.start(env)
+        teacher = tactical.LabelledCautiousIDM(env.agent, env.scenario.map_seed)
+        controller = tactical.TacticalController()
         teacher_drives = student is None or rng.random() < task["beta"]
         step = 0
         while True:
-            label = np.clip(np.asarray(teacher.act(env, obs), dtype=np.float32), -1, 1)
+            _, acceleration = teacher.act(env.agent.id)        # also records the lane the teacher steers for
+            label = np.array([tactical.teacher_command(teacher, env.agent), np.clip(acceleration, -1, 1)],
+                             dtype=np.float32)
             if step % KEEP_EVERY == 0:
                 episode_obs.append(obs.astype(np.float16))
                 episode_act.append(label)
-            action = label if teacher_drives else student.predict(obs, deterministic=True)[0]
-            obs, _, term, trunc, info = env.step(action)
+            decision = label if teacher_drives else student.predict(obs, deterministic=True)[0]
+            obs, _, term, trunc, info = env.step(controller.low_level(env.agent, decision))
             step += 1
             if term or trunc:
                 outcomes.append((bool(teacher_drives), info["outcome"]))
@@ -84,10 +92,11 @@ def _collect(task: dict) -> dict:
 
 
 def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict:
-    """Regress the PPO actor's mean action onto the teacher's actions (mean squared error).
+    """Regress the PPO actor's mean action onto the teacher's (lane command, throttle) by weighted MSE.
 
-    The teacher is deterministic, so this is plain behaviour cloning of the action mean; the
-    exploration noise (log_std) is set separately before PPO, and the value head is untouched.
+    Lane changes are about 2% of steps; their samples get LANE_CHANGE_WEIGHT so the student does not
+    learn to always keep its lane (and then wait behind a broken-down car). The exploration noise
+    (log_std) is set separately before PPO, and the value head is untouched.
     """
     policy = model.policy
     params = [*policy.mlp_extractor.policy_net.parameters(), *policy.action_net.parameters(),
@@ -95,6 +104,7 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict
     optimizer = torch.optim.Adam(params, lr=1e-3)
     gen = torch.Generator().manual_seed(seed)
     Y = torch.as_tensor(act)
+    W = torch.where(Y[:, 0].abs() > 0.5, LANE_CHANGE_WEIGHT, 1.0)[:, None]
     mse = mae = 0.0
     for _ in range(epochs):
         order = torch.randperm(len(Y), generator=gen)
@@ -103,24 +113,33 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict
             idx = order[i:i + 512]
             x = torch.as_tensor(obs[idx.numpy()].astype(np.float32))
             mean = policy.action_net(policy.mlp_extractor.forward_actor(policy.extract_features(x)))
-            loss = torch.nn.functional.mse_loss(mean, Y[idx])
+            loss = ((mean - Y[idx]) ** 2 * W[idx]).mean()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             total_mse += loss.item() * len(idx)
             total_mae += (mean.detach().clamp(-1, 1) - Y[idx]).abs().mean().item() * len(idx)
         mse, mae = total_mse / len(order), total_mae / len(order)
-    return {"mse": mse, "action_mae": mae}
+    command = np.sign(np.round(act[:, 0]))
+    with torch.no_grad():
+        sample = torch.as_tensor(obs[: min(len(obs), 20_000)].astype(np.float32))
+        predicted = policy.action_net(policy.mlp_extractor.forward_actor(policy.extract_features(sample))).numpy()
+    chosen = np.where(predicted[:, 0] > 0.5, 1, np.where(predicted[:, 0] < -0.5, -1, 0))
+    changes = command[: len(chosen)] != 0
+    return {"weighted_mse": mse, "action_mae": mae,
+            "lane_command_agreement": float(np.mean(chosen == command[: len(chosen)])),
+            "lane_change_recall": float(np.mean(chosen[changes] == command[: len(chosen)][changes])) if changes.any() else None}
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--name", required=True)
-    p.add_argument("--rounds", type=int, default=8)
+    p.add_argument("--rounds", type=int, default=5)
     p.add_argument("--episodes", type=int, default=600, help="episodes per round")
     p.add_argument("--workers", type=int, default=6)
-    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--check", action="store_true")
+    p.add_argument("--pilot", action="store_true", help="3 rounds x 240 episodes, 100-scene validation")
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
@@ -128,14 +147,17 @@ def main() -> None:
     from avtest.sim import OBS_DIM
     import gymnasium as gym
 
-    out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else ""))
+    out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else "_pilot" if args.pilot else ""))
     panel = progress.VAL_PANEL
     if args.check:
         args.rounds, args.episodes, args.workers, args.epochs, panel = 1, 4, 2, 1, 4
+    elif args.pilot:
+        args.rounds, args.episodes, panel = 2, 240, 100
     if (out / "train_log.jsonl").exists():
         raise SystemExit(f"{out} already has PPO training; pretrain into a new --name")
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
-                "tier": TIER, "teacher": "idm_cautious", "drop_teacher_failures": True, "val_panel": panel}
+                "tier": TIER, "teacher": "idm_cautious", "drop_teacher_failures": True, "val_panel": panel,
+                "action": "tactical", "lane_change_weight": LANE_CHANGE_WEIGHT}
     if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -184,7 +206,7 @@ def main() -> None:
         outcomes = [o for r in results for o in r["outcomes"]]
         rollout = [o for t, o in outcomes if not t]
         report = progress.checkpoint_report(out / "model_last.zip", out, f"bc_round_{rnd:02d}", workers=min(4, args.workers),
-                                            panel=panel)
+                                            panel=panel, tier=TIER, t1_panel=min(panel, 100))
         row = {"round": rnd, "samples": n_samples, **fit_stats, "collect_s": collect_s, "wall_s": time.time() - t0,
                "teacher_episodes": sum(t for t, _ in outcomes),
                "teacher_failures_dropped": sum(t and o != "success" for t, o in outcomes),

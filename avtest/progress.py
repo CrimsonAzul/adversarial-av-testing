@@ -7,7 +7,8 @@ Imitation (scripts/pretrain_bc.py) and PPO (scripts/train_driver.py) both call
   panel is separate and untouched);
 - recordings: the same three showcase scenarios (one per event type), so the GIFs show the
   same situations getting better over training;
-- chart: success overall and per event type against the 98% gate, regenerated each time.
+- T1: the same panel's θ decoded as T1 (the tier most likely to qualify), 100 scenes;
+- chart: success overall, per event type and on T1, against the 98% gate, regenerated each time.
 """
 from __future__ import annotations
 
@@ -31,8 +32,8 @@ def pct(x) -> str:
 def headline(report: dict) -> str:
     """One-line validation summary for console progress."""
     by = report["val_success_by_event"]
-    t1 = f", T1-like {pct(report['val_success_t1_like'])}" if "val_success_t1_like" in report else ""
-    return (f"val {pct(report['val_success'])} (" + ", ".join(f"{e} {pct(by[e])}" for e in by) + t1 + ")")
+    t1 = f" | T1 {pct(report['val_t1_success'])} of {report['val_t1_scenes']}" if "val_t1_success" in report else ""
+    return f"val {pct(report['val_success'])} (" + ", ".join(f"{e} {pct(by[e])}" for e in by) + ")" + t1
 
 
 def validation_panel(size: int = VAL_PANEL) -> tuple[np.ndarray, list[int]]:
@@ -55,12 +56,14 @@ def summarise(rows: list[dict]) -> dict:
 
 
 def checkpoint_report(model_path: Path, run_dir: Path, label: str, workers: int = 4,
-                      panel: int = VAL_PANEL, record: bool = True) -> dict:
+                      panel: int = VAL_PANEL, record: bool = True, tier: str = TIER, t1_panel: int = 100) -> dict:
     """Validate ``model_path`` and record the showcase scenarios under run_dir/recordings/<label>/."""
     from .evaluate import Evaluator
     from .recording import showcase
+    if tier != TIER:
+        raise ValueError(f"validation panel is defined for {TIER}; training tier is {tier}")
     thetas, map_seeds = validation_panel(panel)
-    with Evaluator(model_path, TIER, workers=workers, references=False) as evaluator:
+    with Evaluator(model_path, tier, workers=workers, references=False) as evaluator:
         rows = evaluator.evaluate(thetas, map_seeds, split="val")
         recorded = []
         if record:
@@ -70,6 +73,14 @@ def checkpoint_report(model_path: Path, run_dir: Path, label: str, workers: int 
             recorded = [{"event": Path(r["gif"]).stem, "outcome": r["outcome"]} for r in evaluator.record(items)]
     summary = summarise(rows)
     summary["showcase"] = recorded
+    if t1_panel:
+        # the same validation θ decoded as T1, the tier most likely to qualify (LOG.md, 2026-11-01)
+        t1_thetas, t1_seeds = validation_panel(t1_panel)
+        with Evaluator(model_path, "T1", workers=workers, references=False) as evaluator:
+            t1_rows = evaluator.evaluate(t1_thetas, t1_seeds, split="val")
+        summary["val_t1_success"] = float(np.mean([r["sut"]["outcome"] == "success" for r in t1_rows]))
+        summary["val_t1_scenes"] = len(t1_rows)
+        summary["val_t1_outcomes"] = {k: sum(r["sut"]["outcome"] == k for r in t1_rows) for k in OUTCOMES}
     return summary
 
 
@@ -85,6 +96,8 @@ def chart(history: list[dict], x_key: str, x_label: str, path: Path, title: str)
     ax.plot(x, [h["val_success"] for h in rows], "o-", color="#111", lw=2, label=f"all {rows[-1]['val_scenes']} scenes")
     for event, colour in zip(sc.TIERS[TIER]["events"], ("#2a78d6", "#eb6834", "#1baf7a")):
         ax.plot(x, [h["val_success_by_event"][event] for h in rows], ".--", color=colour, label=event)
+    if all("val_t1_success" in h for h in rows):
+        ax.plot(x, [h["val_t1_success"] for h in rows], "s-", color="#8e44ad", lw=2, label="T1 (likely qualifying tier)")
     ax.axhline(0.98, color="#c00", lw=1, ls=":", label="qualification gate 98%")
     ax.set_ylim(0, 1.02)
     ax.set_xlabel(x_label)

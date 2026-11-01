@@ -1,6 +1,6 @@
 # Adversarial scenario generation for a qualified driving policy
 
-Capstone project. A PPO driver is trained in [MetaDrive](https://github.com/metadriverse/metadrive) until it passes a strict random-testing qualification inside its operational design domain (ODD). Four search methods then hunt for its remaining failures at equal simulator budgets: a reinforcement-learning scenario generator (the contribution), CMA-ES, Bayesian optimisation and random search. Only *valid* failures count: inside the ODD, physically plausible by construction, avoidable by an independent reference driver, and reproduced on replay.
+Capstone project. A driving policy (a learned tactical planner over a PID tracking controller) is trained in [MetaDrive](https://github.com/metadriverse/metadrive) until it passes a strict random-testing qualification inside its operational design domain (ODD). Four search methods then hunt for its remaining failures at equal simulator budgets: a reinforcement-learning scenario generator (the contribution), CMA-ES, Bayesian optimisation and random search. Only *valid* failures count: inside the ODD, physically plausible by construction, avoidable by an independent reference driver, and reproduced on replay.
 
 - Design and preregistered rules: [docs/DESIGN.md](docs/DESIGN.md)
 - Scenario parameters and ranges: [docs/SCENARIO_SPACE.md](docs/SCENARIO_SPACE.md)
@@ -35,7 +35,8 @@ Run commands are listed in [docs/RUNBOOK.md](docs/RUNBOOK.md). Every long job re
 ```
 avtest/scenario.py     θ ∈ [0,1]^12 → MetaDrive scenario (roads, lanes, traffic, one scripted event)
 avtest/sim.py          MetaDrive environment with the event vehicle/obstacle and episode telemetry
-avtest/drivers.py      SUT (PPO checkpoint) and the reference drivers (IDM, cautious IDM, MetaDrive expert)
+avtest/drivers.py      SUT (learned planner + controller) and the reference drivers (IDM, cautious IDM, MetaDrive expert)
+avtest/tactical.py     tactical interface: lane command + throttle from the policy, PID steering
 avtest/evaluate.py     parallel evaluator: SUT episode, references, replay → one record per scenario
 avtest/severity.py     the shared objective every adversary maximises
 avtest/adversaries/    random, CMA-ES, Bayesian optimisation, RL (PPO scenario generator)

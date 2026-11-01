@@ -114,3 +114,109 @@ The author chose this after seeing the ceiling check.
 - **Episodes the teacher drove and failed are dropped** from the imitation data; student-driven DAgger episodes are kept. Tested by forcing a crashing teacher (`tests/test_collect.py`).
 - **Validation** now also reports success on its T1-like subset (S/C roads, traffic ≤ 0.10, lead-brake or obstacle), the slice of the panel most comparable to the likely qualifying tier.
 - Checks: 25 tests pass; `pretrain_bc --check` and `train_driver --check` ran on T2.
+
+## 2026-11-01 — daytime pilot before any further overnight run (criteria declared before running)
+
+The author asked for every component to be double or triple checked before another overnight run. Checks already done:
+- Both training scripts re-read line by line. Validation now takes the training tier explicitly and refuses a mismatch.
+- 25 tests pass.
+- The teacher was checked through the exact imitation path (clipped labels, T2 training seeds): 40/42 = 95.2% success, labels plausible (steering std 0.12, braking in 5.5% of steps), observations within [0, 1].
+
+Pilot (production settings, scaled down in time):
+- `pretrain_bc --name d2 --pilot`: 3 rounds × 240 episodes, validation on the first 100 scenes of the fixed panel.
+- Then `train_driver --name d2 --pilot`: production configuration and curriculum, 100k critic warm-up, 2 × 300k PPO chunks, the same validation.
+
+Pass criteria, declared now:
+- **C1, DAgger works:** the best validation of rounds 1–2 is higher than round 0's.
+- **C2, lane keeping works:** off-road in ≤ 10% of validation scenes in the best round.
+- **C3, on track:** best round ≥ 60% validation success on T2 and ≥ 75% on its T1-like subset. Basis: d1, lidar only on T3, peaked at 52% after 5 rounds. A driver that cannot pass 60% after 3 rounds is unlikely to approach the gate overnight.
+- **C4, PPO does not collapse:** validation after each PPO chunk is no more than 5 points below the warm start's.
+- **C5, no reckless shift:** mean completion time on successful validation scenes stays ≥ 80% of the warm start's (d1's dropped from about 66 s to about 30 s).
+
+Rule: the overnight command is given only if C1–C5 pass. Otherwise the cause is diagnosed and fixed, and the pilot is re-run, during the day.
+
+## 2026-11-01 — pilot 1 result: FAILED (C2, C3); diagnosis
+
+`pretrain_bc --name d2 --pilot` (log: `runs/driver/d2_pilot/bc_log.jsonl`). Validation success by round: 10% → 30% → 31%. Best round: off-road 40/100, collision 25, stuck 4. T1-like subset (7 scenes): 2, 2, then 4 of 7.
+- C1 PASS (improves across rounds). **C2 FAIL** (off-road 40% > 10%). **C3 FAIL** (31% < 60%). PPO pilot not run. No overnight run.
+
+Diagnosis (`scripts/diagnose_driver.py`, 30 validation scenes plus an empty-road variant of each; outputs in `runs/diagnose/`):
+- Every off-road was the yellow-centre-line flag, with the car near its lane centre and drifting laterally at about 1 m/s. The corner crosses the line at an angle: the student weaves.
+- On empty roads (no traffic, event out of reach) the round-2 student completed only 18/30. The teacher completed 30/30 on both the normal and the empty roads. The environment is fine; the student cannot hold its lane.
+- Compared with the teacher, the student steered twice as hard (mean |steer| 0.079 vs 0.038), flipped steering direction nearly twice as often (1.0 vs 0.57 per s), and changed lanes on empty roads, where the teacher never does.
+- **Wrong hypothesis, corrected.** I first thought the observation lacked lane-relative position. MetaDrive's default observation does contain the offset from the current lane centre; it lacks lane boundaries and any view of the road ahead. Adding a 24-beam lane-line detector and a 24-beam road-edge detector (observation 275 → 320) only moved round-0 empty-road success from 3/30 to 6/30. That is not the main cause. Kept anyway, as a realistic perception input.
+- **Undertraining ruled out.** The same round-0 data fitted for 60 instead of 10 epochs changed held-out steering error only from 0.049 to 0.040, and added a steering bias of +0.021.
+- **Conclusion.** An MLP copying the teacher's steering feedback loop from sensor features makes steering errors (about 0.04) as large as the corrections lane keeping needs (about ±0.02), and in closed loop these compound into weaving. DAgger corrects this only slowly.
+
+Candidate fix under test (prototype, production code unchanged): **tactical interface** (`avtest/tactical.py`). The policy outputs a lane command (left/keep/right) and throttle/brake; steering comes from the lane-tracking PID controller that MetaDrive's IDM and `LaneChangePolicy` use, with the same gains. This is the learned-planner / classical-controller split of modular driving stacks. The learned part still makes every decision the adversarial events probe.
+- Check: the teacher driving only through this interface, using its own labels, succeeds on 40/42 T2 training scenes, identical to the 40/42 it gets with full control. The labels capture its behaviour completely.
+- Round-0 student with the interface: **0 off-road** on 30 validation and 30 empty-road scenes (vs 12 and 7 before), but mostly stuck. It under-predicts throttle when slow: about 0.0 at 7 km/h where the teacher applies 1.0. Those states are rare in teacher-driven data, and DAgger is the standard fix.
+- Running: the 3-round DAgger pilot with the interface, same budget and same C1–C3 criteria as pilot 1 (`runs/driver/tactical_pilot/pilot_log.jsonl`).
+
+## 2026-11-01 — pilot 2 (tactical interface prototype): imitation criteria PASS
+
+Same budget as pilot 1: 3 rounds × 240 T2 episodes, teacher crashes dropped. The script is a prototype outside `scripts/`; production code is unchanged. Logs: `runs/driver/tactical_pilot/`.
+- **My bug, caught before reporting.** The prototype's in-loop validation evaluated only 10 of the 100 scenes (wrong list chunking), so its 60% / 100% figures are void. Round 1 and 2 checkpoints were re-validated on all 100 scenes with an assertion that every scene runs once (`validation_100.jsonl`). The empty-road test (30 scenes) was unaffected.
+- **Results (100 validation scenes, T2):**
+  - Round 1: 83% (collision 13, stuck 4).
+  - Round 2: **85%**. Collision 14, **off-road 1**. Lead-brake 36/37, obstacle 33/36, cut-in 16/27. T1-like subset 7/7. Mean completion time on successes 72 s (the teacher drives at 20 km/h).
+  - Empty roads: 29/30 and 27/30. The old design's round-0 student managed 3/30, its round-2 student 18/30.
+- **Criteria:** C1 PASS (0% → 83% → 85%), C2 PASS (off-road 1%), C3 PASS (85% ≥ 60%; T1-like 7/7 ≥ 75%, though only 7 scenes).
+- The student is near its teacher (cautious IDM completes 88% of random T2 scenes). Cut-ins are the main remaining failure, and PPO has to improve beyond imitation there.
+- **Not yet done:** adopting the interface in production code (needs the author's approval, because it changes the SUT's architecture), then the PPO pilot (C4, C5) through the production scripts.
+
+## 2026-11-01 — design adopted; pilot 3 (production scripts): C1, C2, C5 pass; C3 (T1-like part) and C4 fail
+
+The author approved the tactical design (learned lane command + throttle/brake, PID steering). It is now in `avtest/drivers.py` (SUTDriver), `avtest/sim.py` (TrainingEnv) and `scripts/pretrain_bc.py` (tactical labels, lane-change samples weighted 10×, 20 epochs).
+
+New tests (28 pass):
+- the controller holds the lane centre and a held "left" command changes lane;
+- the teacher driving through its own tactical labels succeeds;
+- failed teacher demonstrations are dropped, using a teacher that never moves;
+- a reused environment gives identical results before and after other scenarios (no leak between episodes).
+
+Two intermediate test failures were my test's fault: constant throttle reached 64 km/h on a curve, and a lane-change command was held for only one step. Both were traced, not assumed.
+
+Pilot 3 (`pretrain_bc --name d2 --pilot`, then `train_driver --name d2 --pilot`; logs in `runs/driver/d2_pilot/`; pilot 1's folder kept as `d2_pilot1_endtoend`):
+
+| Stage | Validation (100 T2 scenes) | Off-road | Collisions | T1-like (7 scenes) | Mean success time |
+|---|---|---|---|---|---|
+| Imitation round 0 | 3% (60 stuck) | 0 | 16 | 0/7 | 108 s |
+| Imitation round 1 | 77% | 1 | 21 | 7/7 | 78 s |
+| Imitation round 2 | 81% | 0 | 18 | 4/7 | 73 s |
+| PPO 405k steps | 75% | 0 | 25 | 5/7 | 62 s |
+| PPO 707k steps | 75% | 0 | 25 | 6/7 | 60 s |
+
+- C1 PASS, C2 PASS. C3 PASS on T2 (81%) but **FAIL on the T1-like part** (4/7 < 75%). That subset is only 7 scenes, which I under-sized when declaring it; the criterion still stands as written.
+- **C4 FAIL**: PPO is 6 points below the warm start, more than the 5 allowed. C5 PASS narrowly: success time is 83% of the warm start's, the limit being 80%.
+- **Diagnosis of C4.** PPO trained at curriculum difficulty 0.30–0.32, with gentle events and light traffic. Its training success was 93–95% while validation, at full difficulty, fell. On easy scenes driving faster is safe and earns progress reward sooner, so it sped up (73 → 60 s) and collided more on hard scenes (18 → 25). The curriculum was designed for PPO from scratch; after a competent warm start it trains on the wrong distribution.
+- No overnight run.
+
+## 2026-11-01 — pilot 3b: PPO without curriculum after the warm start — C4, C5 pass
+
+- **Fix.** After an imitation warm start, PPO trains at full difficulty from the first step (`scripts/train_driver.py`). From scratch it still uses the curriculum.
+- **Re-run from the identical warm start** (imitation round 2, byte-identical file; `runs/driver/d2b_pilot/`):
+
+| Checkpoint | Validation (100 T2 scenes) | Collisions | Training success | Mean success time | T1 (100 scenes) |
+|---|---|---|---|---|---|
+| Warm start (imitation round 2) | 81% | 18 | — | 73 s | 87% (Wilson 79–92%) |
+| PPO 405k | **86%** | 14 | 85% | 66 s | **92%** (85–96%) |
+| PPO 707k | **84%** | 15 | 89% | 65 s | **92%** (85–96%) |
+
+- **C4 PASS** (+5 and +3 points, not below −5). **C5 PASS** (success time 89–90% of the warm start's; limit 80%). Training success rose across chunks. PPO diagnostics were stable: approx KL 0.002–0.004, clip fraction 0.11–0.13, explained variance 0.84–0.86.
+- **C3's T1-like part remains a declared failure** on its 7-scene subset (imitation round 2: 4/7). The 100-scene T1 measurement made since (87% after imitation, 92% after PPO) is far above the 75% that part of the criterion aimed at. The author is told this explicitly with the overnight command; the criterion is not rewritten.
+- **T1 failures after PPO:** 7–8 collisions, mostly broken-down obstacles (37/44 succeed; lead-brake 55/56). Still short of the 98% gate; overnight training is needed to see how far it goes.
+
+Changes for the overnight run, decided now:
+- Validation also reports T1 on 100 scenes (the same θ decoded as T1), since T1 is the tier most likely to qualify.
+- Imitation rounds 8 → 5 (6 collections of 600 episodes, about 3 h). With the tactical interface, imitation reached 77% after one round, while PPO is adding the most per hour.
+
+Checks before handing over: all tests, plus `pretrain_bc --check` and `train_driver --check` through the new T1 reporting path.
+
+## 2026-11-01 — pre-overnight check: `train_driver --check` did not stop (my bug, fixed)
+
+- **What happened.** The final check (all tests, then both training scripts in `--check` mode) ran for about two hours instead of a few minutes. Tests passed (28), and `pretrain_bc --check` finished normally. `train_driver --check` should stop at 6,144 steps but ran 82,944 steps (41 chunks) until the 40-minute timeout killed it. The killed process's validation workers kept the output pipe open, so the check never reported back.
+- **Cause.** When I added `--pilot`, I read the stop condition (`stop_at = total_steps`) *before* `--check` shrank `total_steps` to 6,144. So `--check` ran to the session limit. The pilot set its own limit and the production run uses the full 40M target, so neither was affected; the check was.
+- **Fix.** Mode handling moved into `run_settings()` in `scripts/train_driver.py`, which computes the stop condition after every override and refuses `--check` with `--pilot`. New test `test_each_mode_stops_at_its_own_step_count` checks output folder, step limit and panel for production, pilot and both check paths. Restoring the old ordering on purpose makes the test fail (40,000,000 ≠ 6,144), so it does detect this bug.
+- **What the overlong run did show.** The new T1 reporting worked on every validation (`val_t1_success` in every row), and recordings and charts were written. Checks now log to files rather than pipes, so leftover workers cannot hide a result.
+- **Re-check after the fix (18:34–18:42).** 29 tests pass. `pretrain_bc --check`: teacher round plus one student round, then stops. `train_driver --check`: critic warm-up to 1,024 steps, PPO chunks at 3,072, 5,120 and 7,168, then stops by itself and writes `done.json` (3.4 minutes). Every validation row includes T1 results, there are no errors in any log, and no processes are left. The 0–25% success rates are expected for check-sized training (4 episodes, 1 epoch); the check tests the pipeline, not learning.

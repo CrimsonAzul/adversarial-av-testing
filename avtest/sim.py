@@ -46,7 +46,14 @@ SPEED_REWARD = 0.02            # per step at maximum speed: keeps the driver fro
 SUCCESS_REWARD = 20.0
 FAILURE_PENALTY = 30.0         # collision, off-road, stuck and timeout alike
 NEAREST_VEHICLES = 4           # object list: relative position/velocity of the 4 nearest vehicles
-OBS_DIM = 259 + 4 * NEAREST_VEHICLES
+# Lane-line and road-edge detection (a camera's lane markings and kerbs). Without them MetaDrive gives
+# only one lane-relative number (offset from the current lane centre), no lane boundaries and no view
+# of the road ahead; the pilot student weaved and crossed the centre line (docs/LOG.md, 2026-11-01).
+LANE_LINE_BEAMS, LANE_LINE_RANGE_M = 24, 20
+ROAD_EDGE_BEAMS, ROAD_EDGE_RANGE_M = 24, 50
+# MetaDrive's size formula (obs/state_obs.py): 259 by default; the road-edge beams replace its 2 edge
+# distances, the lane-line beams replace its 1 lane-centre offset, and each nearest vehicle adds 4
+OBS_DIM = 259 + 4 * NEAREST_VEHICLES + (ROAD_EDGE_BEAMS - 2) + (LANE_LINE_BEAMS - 1)
 
 BASE_CONFIG = dict(
     use_render=False, log_level=50, store_map=False, start_seed=0, num_scenarios=seeds.SPLITS["heldout"][1],
@@ -56,7 +63,9 @@ BASE_CONFIG = dict(
     crash_vehicle_penalty=FAILURE_PENALTY, crash_object_penalty=FAILURE_PENALTY,
     crash_sidewalk_penalty=FAILURE_PENALTY, driving_reward=PROGRESS_REWARD_PER_M, speed_reward=SPEED_REWARD,
     use_lateral_reward=True,
-    vehicle_config={"lidar": {"num_lasers": 240, "distance": 50, "num_others": NEAREST_VEHICLES}},
+    vehicle_config={"lidar": {"num_lasers": 240, "distance": 50, "num_others": NEAREST_VEHICLES},
+                    "lane_line_detector": {"num_lasers": LANE_LINE_BEAMS, "distance": LANE_LINE_RANGE_M},
+                    "side_detector": {"num_lasers": ROAD_EDGE_BEAMS, "distance": ROAD_EDGE_RANGE_M}},
 )
 
 
@@ -343,6 +352,9 @@ def run_episode(env: AVTestEnv, scenario: sc.Scenario, driver) -> dict:
 class TrainingEnv(gym.Env):
     """Gym wrapper for PPO training: every reset draws θ over the tier and a train-split seed.
 
+    Actions are tactical (lane command, throttle/brake; avtest.tactical); the PID controller turns
+    them into MetaDrive's steering and throttle, exactly as SUTDriver does at evaluation time.
+
     ``set_difficulty(d)`` (0..1) scales traffic density and event intensity down and moves
     the event offset and relative speed towards their easy ends (far ahead, not slower than
     the ego), for the curriculum in scripts/train_driver.py.
@@ -351,9 +363,11 @@ class TrainingEnv(gym.Env):
     def __init__(self, tier: str, seed: int):
         super().__init__()
         self.tier, self.rng, self.difficulty = tier, np.random.default_rng(seed), 1.0
+        from .tactical import TacticalController
         self.env = AVTestEnv()
+        self.controller = TacticalController()
         self.observation_space = self.env.observation_space
-        self.action_space = self.env.action_space
+        self.action_space = self.env.action_space          # same Box(-1, 1, (2,)); meaning: lane command, throttle
         self.last_outcome = None
 
     def set_difficulty(self, d: float):
@@ -368,10 +382,11 @@ class TrainingEnv(gym.Env):
             i = names.index(easy_high)
             theta[i] = 1 - self.difficulty * (1 - theta[i])
         self.env.load(sc.decode(theta, seeds.draw(self.rng, "train"), self.tier))
+        self.controller.reset()
         return self.env.reset()
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(self.controller.low_level(self.env.agent, action))
         if terminated or truncated:
             self.last_outcome = info["outcome"]
         return obs, reward, terminated, truncated, {k: v for k, v in info.items() if k in ("outcome", "route_completion")}

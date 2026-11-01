@@ -1,28 +1,24 @@
 """Imitation data collection (own module: MetaDrive allows one engine per process)."""
-import numpy as np
-
 import torch  # noqa: F401  (before MetaDrive)
+from metadrive.policy.idm_policy import IDMPolicy
+
 from scripts import pretrain_bc
 
 
-class CrashingTeacher:
-    name = "crashing"
+class BrakingTeacher(IDMPolicy):
+    """A teacher that never moves: every episode it drives ends stuck."""
 
-    def start(self, env):
-        pass
+    steered_lane = None
 
-    def act(self, env, obs):
-        return [0.8, 1.0]                     # full throttle, hard steer: leaves the road
+    def act(self, *args, **kwargs):
+        self.steered_lane = self.control_object.navigation.current_lane
+        return [0.0, -1.0]
 
 
 def test_failed_teacher_demonstrations_are_dropped(monkeypatch):
-    import avtest.drivers
-    monkeypatch.setattr(avtest.drivers, "CautiousIDMDriver", CrashingTeacher)
-    result = pretrain_bc._collect({"seed": 1, "episodes": 2, "model": None, "beta": 1.0})
-    assert [o for _, o in result["outcomes"]] and all(o != "success" for _, o in result["outcomes"])
-    assert result["obs"].shape == (0, pretrain_bc_obs_dim()) and result["act"].shape == (0, 2)
-
-
-def pretrain_bc_obs_dim() -> int:
+    import avtest.tactical
     from avtest.sim import OBS_DIM
-    return OBS_DIM
+    monkeypatch.setattr(avtest.tactical, "LabelledCautiousIDM", BrakingTeacher)
+    result = pretrain_bc._collect({"seed": 1, "episodes": 2, "model": None, "beta": 1.0})
+    assert [o for _, o in result["outcomes"]] == ["stuck", "stuck"]
+    assert result["obs"].shape == (0, OBS_DIM) and result["act"].shape == (0, 2)

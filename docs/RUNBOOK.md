@@ -9,7 +9,7 @@ Times are measured on this laptop (about 80 simulator steps/s per process with t
 | When | Step | Time |
 |---|---|---|
 | Night 1 (d1, done) | first attempt: far below the gate; reward error fixed | — |
-| Night 2 | 1a imitation warm start (d2), then 1b PPO | 2–2.5 h + rest of night |
+| Night 2 | 1a imitation warm start (d2, 5 rounds), then 1b PPO 5 h | ~3 h + 5 h |
 | Nights 2–4 | 1b PPO (same command each night) | 8 h each |
 | ~Nov 5 | 2 qualification | 1 h per tier tested |
 | If it fails | more 1b, then 2 with `--attempt 2` | until Nov 14 at the latest (DESIGN.md rule) |
@@ -33,13 +33,13 @@ The three driver showcase GIFs (lead_brake, obstacle, cut_in) are the same scena
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## 1a. Imitation warm start (about 2–2.5 hours, once)
+## 1a. Imitation warm start (about 3 hours, once)
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.pretrain_bc --name d2
 ```
 
-Each round prints the action error and validation success on the 200-scene panel, overall and per event. Rising validation means the warm start is working. If it is interrupted, the same command resumes at the last finished round. At the end the best round is saved as `runs/driver/d2/model_last.zip`, PPO's starting point.
+Each round prints the action error and validation success on the 200-scene T2 panel, overall and per event, plus success on 100 T1 scenes (the tier most likely to qualify). Rising validation means the warm start is working. If it is interrupted, the same command resumes at the last finished round. At the end the best round is saved as `runs/driver/d2/model_last.zip`, PPO's starting point.
 
 ## 1b. PPO training (several nights)
 
@@ -47,7 +47,7 @@ Each round prints the action error and validation success on the 200-scene panel
 .\.venv\Scripts\python.exe -m scripts.train_driver --name d2 --hours 8
 ```
 
-It continues from the warm start: first 300k steps of value-network warm-up (printed as "critic warm-up"), then PPO. Every 1M steps it prints training and validation success and keeps the best checkpoint as `runs/driver/d2/model_best.zip`. Measured in run d1: 260–560 steps/s, falling as the curriculum adds traffic, so an 8-hour night is about 7–8M steps. Repeat each night until validation success is clearly above 98% or has levelled off.
+It continues from the warm start: first 300k steps of value-network warm-up (printed as "critic warm-up"), then PPO. Every 1M steps it prints training and validation success and keeps the best checkpoint as `runs/driver/d2/model_best.zip`. Measured in pilot 3b (warm start, full difficulty, 6 environments): about 356 steps/s, so 1M steps take about 47 minutes plus a few minutes of validation, and a 5-hour session is about 5–6M steps. Repeat each night until validation success is clearly above 98% or has levelled off.
 
 ## 2. Qualify the driver (about 1 hour per tier)
 

@@ -3,11 +3,13 @@
     .venv\\Scripts\\python.exe -m scripts.train_driver --name d2 --hours 8
     .venv\\Scripts\\python.exe -m scripts.train_driver --name d2 --hours 8          # next night: continues d2
     .venv\\Scripts\\python.exe -m scripts.train_driver --name d2 --check            # few-minute pipeline check
+    .venv\\Scripts\\python.exe -m scripts.train_driver --name d2 --pilot            # ~40 min learning pilot after pretrain_bc --pilot
 
 Starts from the imitation warm start in runs/driver/<name>/ if scripts.pretrain_bc made one,
 otherwise from scratch. Training samples θ uniformly over T2 (docs/LOG.md, 2026-11-01: the
 reference drivers themselves fail on 22.5% of T3 scenes) on train-split map seeds, with a
-curriculum on event difficulty over the first 30% of the step target.
+curriculum on event difficulty over the first 30% of the step target when training from scratch;
+after an imitation warm start it trains on the full distribution from the first step.
 
 After a warm start, the first 300k steps train only the value network (the policy is frozen),
 because PPO updates driven by an untrained critic can undo the imitated behaviour; afterwards
@@ -92,29 +94,47 @@ def ppo_diagnostics(model) -> dict:
     return {f"ppo_{k}": float(values[f"train/{k}"]) for k in keep if f"train/{k}" in values}
 
 
+def run_settings(args, root=ROOT) -> tuple:
+    """(output folder, config, validation panel size, step count to stop at) for the chosen mode."""
+    from avtest import progress
+
+    if args.check and args.pilot:
+        raise SystemExit("--check and --pilot are separate modes; pass one")
+    out = root / "runs/driver" / args.name
+    cfg = dict(DEFAULTS, envs=args.envs)
+    panel = progress.VAL_PANEL
+    stop_at = None
+    if args.pilot:
+        cfg.update(critic_warmup_steps=100_000, chunk_steps=300_000)
+        panel, stop_at = 100, 700_000
+        out = out.with_name(args.name + "_pilot")
+    if args.check:
+        cfg.update(total_steps=6144, chunk_steps=2048, critic_warmup_steps=1024, n_steps=256, batch_size=256, envs=2,
+                   val_workers=2)
+        panel = 4
+        if not (root / "runs/driver" / (args.name + "_bccheck") / "model_last.zip").exists():
+            out = out.with_name(args.name + "_check")
+        else:
+            out = out.with_name(args.name + "_bccheck")      # exercise the warm-start path too
+    # after every override: the check once read total_steps before shrinking it and ran on to the session limit
+    return out, cfg, panel, stop_at or cfg["total_steps"]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--name", required=True)
     p.add_argument("--hours", type=float, default=8.0)
     p.add_argument("--envs", type=int, default=DEFAULTS["envs"])
     p.add_argument("--check", action="store_true", help="tiny run that exercises every step, then exits")
+    p.add_argument("--pilot", action="store_true",
+                   help="production settings on <name>_pilot; 100k critic warm-up, then 2 x 300k chunks, 100-scene validation")
     args = p.parse_args()
 
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
     from avtest import progress, sim
 
-    out = ROOT / "runs/driver" / args.name
-    cfg = dict(DEFAULTS, envs=args.envs)
-    panel = progress.VAL_PANEL
-    if args.check:
-        cfg.update(total_steps=6144, chunk_steps=2048, critic_warmup_steps=1024, n_steps=256, batch_size=256, envs=2,
-                   val_workers=2)
-        panel = 4
-        if not (ROOT / "runs/driver" / (args.name + "_bccheck") / "model_last.zip").exists():
-            out = out.with_name(args.name + "_check")
-        else:
-            out = out.with_name(args.name + "_bccheck")      # exercise the warm-start path too
+    out, cfg, panel, stop_at = run_settings(args)
     out.mkdir(parents=True, exist_ok=True)
     if (out / "config.json").exists():
         if read_json(out / "config.json") != cfg:
@@ -143,13 +163,15 @@ def main() -> None:
         return control_state(out) or ("hours used" if time.time() - started > args.hours * 3600 else None)
 
     try:
-        while model.num_timesteps < cfg["total_steps"]:
+        while model.num_timesteps < stop_at:
             if session_over():
                 print(f"session ends ({session_over()}); continue with the same command", flush=True)
                 break
             warmup = warm_start and model.num_timesteps < cfg["critic_warmup_steps"]
             steps = (cfg["critic_warmup_steps"] - model.num_timesteps) if warmup else cfg["chunk_steps"]
-            d = difficulty(model.num_timesteps, cfg)
+            # after an imitation warm start the driver is already competent: train on the full distribution it
+            # is validated and qualified on (pilot 3: an easy-curriculum start taught it to speed; LOG.md 2026-11-01)
+            d = 1.0 if warm_start else difficulty(model.num_timesteps, cfg)
             env.env_method("set_difficulty", d)
             for param in actor_parameters(model):
                 param.requires_grad_(not warmup)
@@ -172,7 +194,8 @@ def main() -> None:
                    "steps_per_s": steps / train_s, **monitor.summary(), **ppo_diagnostics(model), "utc": time.time()}
             if not warmup:                              # the policy did not change during warm-up
                 row.update(progress.checkpoint_report(out / "model_last.zip", out, label,
-                                                      workers=cfg["val_workers"], panel=panel))
+                                                      workers=cfg["val_workers"], panel=panel, tier=cfg["tier"],
+                                                      t1_panel=min(panel, 100)))
                 if row["val_success"] > best:
                     best = row["val_success"]
                     model.save(out / "model_best.zip")

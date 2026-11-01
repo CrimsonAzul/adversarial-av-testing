@@ -1,4 +1,4 @@
-"""Driver-training logic: curriculum, critic warm-up freezing the actor, imitation fitting."""
+"""Driver-training logic: run modes, curriculum, critic warm-up freezing the actor, imitation fitting."""
 import gymnasium as gym
 import numpy as np
 import torch
@@ -12,6 +12,29 @@ def test_curriculum_ramps_then_holds():
     assert train_driver.difficulty(0, cfg) == 0.3
     assert 0.3 < train_driver.difficulty(150, cfg) < 1.0
     assert train_driver.difficulty(300, cfg) == train_driver.difficulty(900, cfg) == 1.0
+
+
+def test_each_mode_stops_at_its_own_step_count(tmp_path):
+    from argparse import Namespace
+    from pytest import raises
+
+    def settings(**mode):
+        args = Namespace(**{"name": "d9", "envs": train_driver.DEFAULTS["envs"], "check": False, "pilot": False, **mode})
+        return train_driver.run_settings(args, root=tmp_path)
+
+    out, cfg, panel, stop_at = settings()
+    assert (out.name, stop_at, panel) == ("d9", 40_000_000, 200) and cfg == train_driver.DEFAULTS
+    out, cfg, panel, stop_at = settings(pilot=True)
+    assert (out.name, stop_at, panel, cfg["critic_warmup_steps"]) == ("d9_pilot", 700_000, 100, 100_000)
+    out, cfg, panel, stop_at = settings(check=True)     # a check must end in minutes, not at the session limit
+    assert (out.name, stop_at, panel) == ("d9_check", 6144, 4) and stop_at == cfg["total_steps"]
+    warm = tmp_path / "runs/driver/d9_bccheck"
+    warm.mkdir(parents=True)
+    (warm / "model_last.zip").touch()
+    out, cfg, panel, stop_at = settings(check=True)
+    assert (out.name, stop_at) == ("d9_bccheck", 6144)
+    with raises(SystemExit):
+        settings(check=True, pilot=True)
 
 
 def small_ppo():
