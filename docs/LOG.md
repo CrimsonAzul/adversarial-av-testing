@@ -85,3 +85,32 @@ Decisions made after seeing run d1's results. None of them touch the qualificati
 - **PPO:** learning rate 3e-5 (was 1e-4), 5 epochs (10), clip 0.1 (0.2), target_kl 0.01 (0.02), so PPO refines the warm start instead of overwriting it.
 - **Reference ceiling check started:** 200 validation scenes each for T3, T2 and T1, all three references on every scene (`scripts.calibrate_references --scenes 200`). It measures whether the 98% gate is reachable by any driver on this distribution. Results are logged when it finishes.
 - Checks: 24 tests pass. `pretrain_bc --name d2 --check` and `train_driver --name d2 --check` ran end to end with the 275-value input and the best-round handover.
+
+## 2026-11-01 — reference ceiling check (200 validation scenes per tier)
+
+Command: `scripts.calibrate_references --tier {T3,T2,T1} --scenes 200` (all three references on every scene). Outputs: `runs/calibration/{T3,T2,T1}_200/summary.json`.
+
+| Tier | Solved by at least one reference | IDM | Cautious IDM | Expert | Best single reference on solvable scenes |
+|---|---|---|---|---|---|
+| T3 | 77.5% | 48.5% | 63.0% | 46.5% | cautious IDM, 81.3% |
+| T2 | 95.0% | 86.0% | 88.0% | 54.5% | cautious IDM, 92.6% |
+| T1 | 100% | 99.0% | 96.0% | 62.5% | IDM, 99.0% |
+
+Unsolved scenes by event: T3 cut-in 20/69, lead-brake 11/62, obstacle 14/69; T2 cut-in 9/69, lead-brake 1/62, obstacle 0/69.
+
+Reading:
+- On T3, even the privileged rule-based drivers fail often: junctions combined with events defeat them.
+- Only on T1 does any driver reach the 98% gate on solvable scenes (IDM 99%).
+- The imitation teacher, cautious IDM, completes 81.3% of solvable T3 scenes and 92.6% of solvable T2 scenes. A student imitating it is therefore capped below the gate on T3 and T2.
+- Training on T3, as d1 did, imitates a teacher that fails on 37% of the training scenes. The demonstrations include its crashes.
+
+No decision is taken in this entry.
+
+## 2026-11-01 — decision: d2 trains on T2 and drops failed teacher demonstrations
+
+The author chose this after seeing the ceiling check.
+- **Training tier T3 → T2** for imitation, PPO and validation, including the showcase recordings. Reason: on T3 the privileged references fail on 22.5% of scenes, and the imitation teacher completes only 81.3% of the solvable ones. A student imitating it cannot approach the 98% gate, and d1's training data included the teacher's crashes on 37% of T3 scenes.
+- **Unchanged:** the qualification rule (still T3, then T2, then T1, first pass wins), the gate, the scenario space and the adversary study. On current evidence T1 is the likely qualifying tier: IDM completes 99% of T1 scenes. T2's best reference completes 92.6% of solvable scenes, below the gate.
+- **Episodes the teacher drove and failed are dropped** from the imitation data; student-driven DAgger episodes are kept. Tested by forcing a crashing teacher (`tests/test_collect.py`).
+- **Validation** now also reports success on its T1-like subset (S/C roads, traffic ≤ 0.10, lead-brake or obstacle), the slice of the panel most comparable to the likely qualifying tier.
+- Checks: 25 tests pass; `pretrain_bc --check` and `train_driver --check` ran on T2.

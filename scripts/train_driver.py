@@ -5,7 +5,8 @@
     .venv\\Scripts\\python.exe -m scripts.train_driver --name d2 --check            # few-minute pipeline check
 
 Starts from the imitation warm start in runs/driver/<name>/ if scripts.pretrain_bc made one,
-otherwise from scratch. Training samples θ uniformly over T3 on train-split map seeds, with a
+otherwise from scratch. Training samples θ uniformly over T2 (docs/LOG.md, 2026-11-01: the
+reference drivers themselves fail on 22.5% of T3 scenes) on train-split map seeds, with a
 curriculum on event difficulty over the first 30% of the step target.
 
 After a warm start, the first 300k steps train only the value network (the policy is frozen),
@@ -32,7 +33,7 @@ import numpy as np
 
 from avtest.records import JsonlLog, ROOT, control_state, read_json, write_json
 
-DEFAULTS = {"tier": "T3", "envs": 6, "total_steps": 40_000_000, "chunk_steps": 1_000_000, "curriculum_until": 0.3,
+DEFAULTS = {"tier": "T2", "envs": 6, "total_steps": 40_000_000, "chunk_steps": 1_000_000, "curriculum_until": 0.3,
             "critic_warmup_steps": 300_000, "val_workers": 4, "n_steps": 1024, "batch_size": 512, "n_epochs": 5,
             "learning_rate": 3e-5, "gamma": 0.99, "gae_lambda": 0.95, "clip_range": 0.1, "ent_coef": 0.0,
             "target_kl": 0.01, "net": [256, 256], "seed": 0}

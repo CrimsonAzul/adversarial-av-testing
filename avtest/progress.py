@@ -2,7 +2,7 @@
 
 Imitation (scripts/pretrain_bc.py) and PPO (scripts/train_driver.py) both call
 ``checkpoint_report`` after every round/chunk, so their numbers are directly comparable:
-- validation: the same 200 scenarios (val split, uniform θ over T3), SUT driving
+- validation: the same 200 scenarios (val split, uniform θ over the training tier T2), SUT driving
   deterministically, no references (this panel selects checkpoints; the qualification
   panel is separate and untouched);
 - recordings: the same three showcase scenarios (one per event type), so the GIFs show the
@@ -18,11 +18,10 @@ import numpy as np
 from . import scenario as sc
 from . import seeds
 
-TIER = "T3"
+TIER = "T2"                     # the training tier (docs/LOG.md, 2026-11-01)
 VAL_PANEL = 200
 VAL_PANEL_SEED = 7
 OUTCOMES = ("success", "collision", "offroad", "stuck", "timeout")
-JUNCTIONS = set("XTO")
 
 
 def pct(x) -> str:
@@ -32,7 +31,8 @@ def pct(x) -> str:
 def headline(report: dict) -> str:
     """One-line validation summary for console progress."""
     by = report["val_success_by_event"]
-    return (f"val {pct(report['val_success'])} (" + ", ".join(f"{e} {pct(by[e])}" for e in by) + ")")
+    t1 = f", T1-like {pct(report['val_success_t1_like'])}" if "val_success_t1_like" in report else ""
+    return (f"val {pct(report['val_success'])} (" + ", ".join(f"{e} {pct(by[e])}" for e in by) + t1 + ")")
 
 
 def validation_panel(size: int = VAL_PANEL) -> tuple[np.ndarray, list[int]]:
@@ -43,12 +43,13 @@ def validation_panel(size: int = VAL_PANEL) -> tuple[np.ndarray, list[int]]:
 def summarise(rows: list[dict]) -> dict:
     ok = lambda rs: float(np.mean([r["sut"]["outcome"] == "success" for r in rs])) if rs else None
     by_event = {e: ok([r for r in rows if r["values"]["event"] == e]) for e in sc.TIERS[TIER]["events"]}
-    plain = [r for r in rows if not JUNCTIONS & set(r["values"]["map"])]
+    t1 = sc.TIERS["T1"]
+    t1_like = [r for r in rows if set(r["values"]["map"]) <= set(t1["blocks"]) and r["values"]["event"] in t1["events"]
+               and r["values"]["traffic_density"] <= t1["max_traffic"]]
     return {"val_success": ok(rows), "val_scenes": len(rows),
             "val_outcomes": {k: sum(r["sut"]["outcome"] == k for r in rows) for k in OUTCOMES},
             "val_success_by_event": by_event,
-            "val_success_no_junctions": ok(plain),
-            "val_success_with_junctions": ok([r for r in rows if r not in plain]),
+            "val_success_t1_like": ok(t1_like), "val_scenes_t1_like": len(t1_like),
             "val_mean_success_time_s": float(np.mean([0.1 * r["sut"]["steps"] for r in rows
                                                       if r["sut"]["outcome"] == "success"] or [np.nan]))}
 

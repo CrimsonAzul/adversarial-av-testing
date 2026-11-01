@@ -12,6 +12,10 @@ over with probability β = 0.5^round each episode, while the teacher still label
 its mean action onto the teacher's actions on all data so far, so scripts.train_driver continues
 with PPO from runs/driver/<name>/model_last.zip.
 
+Training scenarios are uniform over tier T2 (docs/LOG.md, 2026-11-01). Episodes the teacher
+drove and failed are discarded, so the student never imitates a crash; student-driven
+episodes are always kept, because their labels are the teacher's corrections.
+
 Data: every 2nd step is kept (consecutive 0.1 s frames are nearly identical) and stored as
 float16 shards under data/, one per round, so a crash resumes at the last finished round.
 After every round: validation on the fixed 200-scene panel and recordings of the three
@@ -34,7 +38,7 @@ import numpy as np
 
 from avtest.records import JsonlLog, ROOT, read_json, write_json
 
-TIER = "T3"
+TIER = "T2"                  # see docs/LOG.md, 2026-11-01: reference ceiling check
 KEEP_EVERY = 2
 INITIAL_LOG_STD = -1.5
 
@@ -45,13 +49,14 @@ def _collect(task: dict) -> dict:
     from stable_baselines3 import PPO
     from avtest import scenario as sc, seeds
     from avtest.drivers import CautiousIDMDriver
-    from avtest.sim import AVTestEnv
+    from avtest.sim import OBS_DIM, AVTestEnv
     rng = np.random.default_rng(task["seed"])
     env = AVTestEnv()
     teacher = CautiousIDMDriver()
     student = PPO.load(task["model"], device="cpu") if task["model"] else None
     obs_list, act_list, outcomes = [], [], []
     for _ in range(task["episodes"]):
+        episode_obs, episode_act = [], []
         env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
         obs, _ = env.reset()
         teacher.start(env)
@@ -60,17 +65,22 @@ def _collect(task: dict) -> dict:
         while True:
             label = np.clip(np.asarray(teacher.act(env, obs), dtype=np.float32), -1, 1)
             if step % KEEP_EVERY == 0:
-                obs_list.append(obs.astype(np.float16))
-                act_list.append(label)
+                episode_obs.append(obs.astype(np.float16))
+                episode_act.append(label)
             action = label if teacher_drives else student.predict(obs, deterministic=True)[0]
             obs, _, term, trunc, info = env.step(action)
             step += 1
             if term or trunc:
                 outcomes.append((bool(teacher_drives), info["outcome"]))
                 break
+        # a demonstration the teacher failed teaches the failure: keep only successful teacher episodes;
+        # student-driven episodes are kept (DAgger needs the teacher's corrections from the student's mistakes)
+        if not teacher_drives or info["outcome"] == "success":
+            obs_list.extend(episode_obs)
+            act_list.extend(episode_act)
     env.close()
-    return {"obs": np.asarray(obs_list, dtype=np.float16), "act": np.asarray(act_list, dtype=np.float32),
-            "outcomes": outcomes}
+    return {"obs": np.asarray(obs_list, dtype=np.float16).reshape(-1, OBS_DIM),
+            "act": np.asarray(act_list, dtype=np.float32).reshape(-1, 2), "outcomes": outcomes}
 
 
 def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict:
@@ -125,7 +135,7 @@ def main() -> None:
     if (out / "train_log.jsonl").exists():
         raise SystemExit(f"{out} already has PPO training; pretrain into a new --name")
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
-                "tier": TIER, "teacher": "idm_cautious", "val_panel": panel}
+                "tier": TIER, "teacher": "idm_cautious", "drop_teacher_failures": True, "val_panel": panel}
     if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -176,7 +186,9 @@ def main() -> None:
         report = progress.checkpoint_report(out / "model_last.zip", out, f"bc_round_{rnd:02d}", workers=min(4, args.workers),
                                             panel=panel)
         row = {"round": rnd, "samples": n_samples, **fit_stats, "collect_s": collect_s, "wall_s": time.time() - t0,
-               "teacher_episodes": sum(t for t, _ in outcomes), "student_rollouts": len(rollout),
+               "teacher_episodes": sum(t for t, _ in outcomes),
+               "teacher_failures_dropped": sum(t and o != "success" for t, o in outcomes),
+               "student_rollouts": len(rollout),
                "student_rollout_success": (sum(o == "success" for o in rollout) / len(rollout)) if rollout else None,
                **report}
         log.append(row)
