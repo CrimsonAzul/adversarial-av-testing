@@ -229,3 +229,7 @@ Checks before handing over: all tests, plus `pretrain_bc --check` and `train_dri
 - **Hand-off:** both scripts use `runs/driver/d2`, which does not exist yet, so the run starts clean. In PowerShell, PPO starts only if imitation exits with code 0; tested with a clean exit, an exit with stderr output, and an uncaught error.
 - **Laptop:** High performance plan, sleep and hibernate set to Never on AC, on AC power, no update restart pending. Risk found: Windows Update may restart between 2:00 and 8:00 (active hours 8:00–2:00). The author is asked to pause updates; the RUNBOOK now lists this.
 - **Expected duration:** imitation about 2.5 h (about 12 min collection, up to 10 min fitting and 6 min validation per round); PPO `--hours 5` ends at the first 1M-step boundary after 5 h, so 5–6 h.
+
+## 2026-11-01 — GitHub repository recreated
+
+The repository was deleted and recreated with the same name and the same history (7 commits). Early commits had carried a co-author line naming the AI assistant; rewriting the history removed it from `main`, but GitHub kept the old commits and kept listing the assistant as a contributor. Code and history are unchanged. The federated-learning repository was recreated the same way.
