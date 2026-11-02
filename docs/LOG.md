@@ -371,3 +371,43 @@ Data: the attempt-1 T1 panel, which is development data after the failed attempt
 2. **Retrain imitation with a categorical lane decision:** left, keep or right as a classification, so labels are not averaged.
 
 Either way, re-qualify on a new panel (`--attempt 2`).
+
+## 2026-11-02 — controller fix tested and rejected; the real cause is the teacher's overtaking rule
+
+**Author's instruction (afternoon):** take charge of the project while the author is away; decide and proceed without asking. The decisions below are mine (Claude's), logged for review.
+
+**Experiment.** Added two options to `TacticalController`:
+
+- `commit`: once a lane change starts, keep steering for that lane until the ego is in it; only a command the other way cancels it.
+- `threshold`: the lane-command magnitude that starts a change.
+
+`scripts/evaluate_controller.py` drives the d2 2.3M policy with each setting on the 500 attempt-1 T1 scenes (development data). It counts success over the 498 scenes a reference completed, as the gate does. Two settings were run twice, to measure run-to-run noise. Total: 3,500 episodes, 62 min with 4 workers.
+
+| Setting (threshold, commit) | Success | Collision/off-road | Lead-brake | Obstacle | Lane changes per episode |
+|---|---|---|---|---|---|
+| 0.5, off (current) | 95.4% / 95.6% (replicate) | 4.6% / 4.2% | 256 / 257 of 261 | 219 / 219 of 237 | 0.69 |
+| 0.5, on | 90.4% | 9.2% | 231 | 219 | 1.70 |
+| 0.35, on | 87.8% | 12.0% | 226 | 211 | 2.08 |
+| 0.25, on | 86.3% / 85.9% (replicate) | 13.3% / 13.9% | 230 / 231 | 200 / 197 | 2.56 |
+| 0.15, on | 68.5% | 31.5% | 179 | 162 | 4.92 |
+
+- Replicates agree within 2 scenes, so the differences are real. Every change to the controller makes the driver worse.
+- The policy's lane command has many brief spikes past the threshold. Without commitment they are harmless, because the car steers straight back. With commitment each spike becomes a full lane change, often into traffic: lead-brake success falls by about 25 scenes.
+- **Decision:** the SUT keeps the original controller (`SUT_CONTROLLER = {"threshold": 0.5, "commit": False}`). The options remain in the code, defaulting to off, so the experiment can be reproduced.
+
+**Cause of the late lane changes.** I replayed the d2 driver on failed scene 102 with the cautious-IDM teacher labelling every visited state, exactly as the imitation step does (DAgger).
+
+- The teacher calls for full braking from 37 m, when the warning triangle enters its 30 m view.
+- It labels "change lane" only once the student's speed has dropped below 17 km/h, at 25 m.
+- Its label then flips between "change" and "keep" as the student's speed crosses 17 km/h.
+
+MetaDrive's IDM overtakes only when its own speed differs from its 20 km/h target by more than 3 km/h, and only after an internal timer has passed 50 steps (`IDMPolicy.lane_change_policy`). When the teacher drives, it brakes early and so changes lanes at about 34 m. In DAgger, the student's speed decides the label. The student therefore learns a lane change that depends on its own slowing down, and that flips at a speed boundary. This matches the late (median 15.5 m) and flickering lane changes found in the diagnosis.
+
+**Next.** Give the teacher a scene-based overtaking rule: pass a stopped or near-stopped object in its lane as soon as it is within the teacher's 30 m view and the adjacent lane is safe, whatever its own speed. Check this teacher on the development panels, then retrain imitation (run d3).
+
+**Also in this commit:**
+
+- **Controller settings are part of the SUT's identity.** `avtest.tactical.SUT_CONTROLLER` is used by `SUTDriver`. It is included in the qualification panel fingerprint and recorded in `QUALIFIED.json`. `avtest.drivers.qualified_sut` refuses to start the search runs or RQ4 if `models/sut.zip` or the controller settings differ from what qualified. Test added.
+- **`JsonlLog` fix.** A hard kill can leave a torn last line. A resumed run appended after it, which made every later row unreadable; qualification resumes through the same class. `append` now drops a torn tail first. The new test fails without the fix.
+- **`evaluate_controller` resumes.** It appends each result as it arrives; checked with a simulated torn write, after which each of the 6 results was present exactly once.
+- Full test suite: 33 passed.

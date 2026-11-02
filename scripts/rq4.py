@@ -16,7 +16,8 @@ import torch  # noqa: F401  (before MetaDrive)
 import numpy as np
 
 from avtest import scenario
-from avtest.records import JsonlLog, ROOT, read_json, write_json
+from avtest.drivers import qualified_sut
+from avtest.records import JsonlLog, ROOT, write_json
 from avtest.search import map_seed_list
 
 SEEDS = (101, 202, 303)
@@ -29,9 +30,9 @@ def main() -> None:
     args = p.parse_args()
     from avtest.adversaries.rl import RLAdversary
     from avtest.evaluate import Evaluator
-    q = read_json(ROOT / "models/QUALIFIED.json")
+    sut, q = qualified_sut(ROOT)
     tier = q["tier"]
-    with Evaluator(ROOT / "models/sut.zip", tier, workers=args.workers) as evaluator:
+    with Evaluator(sut, tier, workers=args.workers) as evaluator:
         for seed in SEEDS:
             source = ROOT / f"runs/search/rl_s{seed}"
             if not (source / "done.json").exists():

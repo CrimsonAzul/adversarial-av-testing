@@ -20,9 +20,9 @@ class SUTDriver:
 
     def __init__(self, model_path: Path):
         from stable_baselines3 import PPO
-        from .tactical import TacticalController
+        from .tactical import SUT_CONTROLLER, TacticalController
         self.model = PPO.load(str(model_path), device="cpu")
-        self.controller = TacticalController()
+        self.controller = TacticalController(**SUT_CONTROLLER)
 
     def start(self, env):
         self.controller.reset()
@@ -67,3 +67,20 @@ class ExpertDriver:
 
 def references() -> list:
     return [IDMDriver(), CautiousIDMDriver(), ExpertDriver()]
+
+
+def qualified_sut(root: Path) -> tuple[Path, dict]:
+    """models/sut.zip and models/QUALIFIED.json, after checking that the model file and the SUT controller
+    settings in avtest.tactical are still the ones that passed qualification."""
+    from .records import read_json, sha256_file
+    from .tactical import SUT_CONTROLLER
+    record, model = root / "models/QUALIFIED.json", root / "models/sut.zip"
+    if not record.exists():
+        raise SystemExit("No qualified SUT: run scripts.qualify first (docs/RUNBOOK.md, step 2).")
+    q = read_json(record)
+    if sha256_file(model) != q["model_sha256"]:
+        raise SystemExit("models/sut.zip does not match models/QUALIFIED.json")
+    if q.get("controller") != SUT_CONTROLLER:
+        raise SystemExit(f"SUT_CONTROLLER in avtest/tactical.py is {SUT_CONTROLLER}, "
+                         f"but the qualified SUT used {q.get('controller')}")
+    return model, q

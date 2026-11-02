@@ -66,6 +66,18 @@ def test_discovery_counts_unique_cells_once():
     assert low < 0.98 < high
 
 
+def test_log_resumes_after_a_torn_last_line(tmp_path):
+    from avtest.records import JsonlLog
+    path = tmp_path / "log.jsonl"
+    JsonlLog(path).extend([{"i": 0}, {"i": 1}])
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write('{"i": 2, "hal')                      # killed mid-write
+    log = JsonlLog(path)
+    assert log.read() == [{"i": 0}, {"i": 1}]
+    log.extend([{"i": 2}, {"i": 3}])                       # the resumed run
+    assert JsonlLog(path).read() == [{"i": 0}, {"i": 1}, {"i": 2}, {"i": 3}]
+
+
 def scene(sut, solvable=True):
     refs = [{"outcome": "collision"}, {"outcome": "success" if solvable else "stuck"}]
     return {"sut": {"outcome": sut}, "references": refs}
@@ -98,3 +110,24 @@ def test_ask_tell_adversaries_stay_in_bounds_and_resume_exactly(name):
     b = make(name, dim, 101)
     b.load(a.state())
     assert np.allclose(a.ask(4), b.ask(4))
+
+
+def test_search_refuses_a_changed_sut(tmp_path):
+    from avtest.drivers import qualified_sut
+    from avtest.records import sha256_file, write_json
+    from avtest.tactical import SUT_CONTROLLER
+    with pytest.raises(SystemExit, match="No qualified SUT"):
+        qualified_sut(tmp_path)
+    (tmp_path / "models").mkdir()
+    model = tmp_path / "models/sut.zip"
+    model.write_bytes(b"weights")
+    record = {"tier": "T1", "model_sha256": sha256_file(model), "controller": dict(SUT_CONTROLLER)}
+    write_json(tmp_path / "models/QUALIFIED.json", record)
+    assert qualified_sut(tmp_path) == (model, record)
+    write_json(tmp_path / "models/QUALIFIED.json", {**record, "controller": {**SUT_CONTROLLER, "commit": "other"}})
+    with pytest.raises(SystemExit, match="SUT_CONTROLLER"):
+        qualified_sut(tmp_path)
+    write_json(tmp_path / "models/QUALIFIED.json", record)
+    model.write_bytes(b"retrained")
+    with pytest.raises(SystemExit, match="does not match"):
+        qualified_sut(tmp_path)

@@ -48,8 +48,20 @@ class JsonlLog:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._tail_checked = False
+
+    def _drop_torn_tail(self) -> None:
+        """A hard kill can leave a partial last line; appending after it would hide every later row from read()."""
+        if not self.path.exists():
+            return
+        data = self.path.read_bytes()
+        if data and not data.endswith(b"\n"):
+            self.path.write_bytes(data[:data.rfind(b"\n") + 1])
 
     def append(self, row: dict) -> None:
+        if not self._tail_checked:
+            self._drop_torn_tail()
+            self._tail_checked = True
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(row, sort_keys=True) + "\n")
 

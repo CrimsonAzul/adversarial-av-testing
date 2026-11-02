@@ -7,9 +7,10 @@ map seeds (panel seed 1000 + attempt, so every attempt uses a new panel). The pa
 written and hashed before any episode runs. Every scene runs the SUT and all three
 reference drivers. Pass when, over scenes at least one reference completes:
     SUT success ≥ 98%, 95% Wilson lower bound ≥ 96%, collision + off-road ≤ 2%.
-The first passing tier is frozen in models/QUALIFIED.json with the model hash, and the
-model is copied to models/sut.zip. A failed attempt's panel becomes development data;
-re-test only with a new --attempt number. Results append to docs/QUALIFICATION.md.
+The first passing tier is frozen in models/QUALIFIED.json with the model hash and the SUT
+controller settings (avtest.tactical.SUT_CONTROLLER), and the model is copied to models/sut.zip.
+A failed attempt's panel becomes development data; re-test only with a new --attempt number.
+Results append to docs/QUALIFICATION.md.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import numpy as np
 
 from avtest import scenario, seeds, stats
 from avtest.records import JsonlLog, ROOT, read_json, sha256_file, sha256_json, write_json
+from avtest.tactical import SUT_CONTROLLER
 
 PANEL = 500
 SUCCESS_MIN, WILSON_MIN, CRASH_MAX = 0.98, 0.96, 0.02
@@ -63,9 +65,9 @@ def main() -> None:
     lines = []
     for tier in args.tiers.split(","):
         out = ROOT / "runs/qualification" / f"attempt{args.attempt}_{tier}"
-        # the model is identified by its hash, not its path, so a resume may spell the path differently
+        # the SUT is its model (by hash, not path, so a resume may spell the path differently) plus its controller
         panel = {"tier": tier, "attempt": args.attempt, "panel_seed": panel_seed, "map_seeds": map_seeds,
-                 "thetas": thetas.tolist(), "model_sha256": model_hash}
+                 "thetas": thetas.tolist(), "model_sha256": model_hash, "controller": SUT_CONTROLLER}
         if (out / "panel.json").exists():
             if read_json(out / "panel.json")["sha256"] != sha256_json(panel):
                 raise SystemExit(f"{out} holds a different panel or model; use a new --attempt")
@@ -94,7 +96,8 @@ def main() -> None:
             (ROOT / "models").mkdir(exist_ok=True)
             shutil.copy2(args.model, ROOT / "models/sut.zip")
             write_json(ROOT / "models/QUALIFIED.json", {
-                "tier": tier, "attempt": args.attempt, "model_sha256": model_hash, "source": str(args.model),
+                "tier": tier, "attempt": args.attempt, "model_sha256": model_hash, "controller": SUT_CONTROLLER,
+                "source": str(args.model),
                 "result": result, "utc": datetime.now(timezone.utc).isoformat()})
             break
     report = ROOT / "docs/QUALIFICATION.md"

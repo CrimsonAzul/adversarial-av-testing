@@ -16,7 +16,8 @@ import torch  # noqa: F401  (before MetaDrive)
 
 from avtest import search
 from avtest.adversaries import METHODS
-from avtest.records import ROOT, read_json, sha256_file
+from avtest.drivers import qualified_sut
+from avtest.records import ROOT
 
 SEEDS = (101, 202, 303)
 BUDGET = 1000
@@ -38,13 +39,8 @@ def main() -> None:
         tier, budget, seeds_, methods = "T2", 28, (101,), METHODS
         root = ROOT / "runs/search_check"
     else:
-        qualified = ROOT / "models/QUALIFIED.json"
-        if not qualified.exists():
-            raise SystemExit("No qualified SUT: run scripts.qualify first (docs/RUNBOOK.md, step 2).")
-        q = read_json(qualified)
-        sut, tier, budget, seeds_, methods = ROOT / "models/sut.zip", q["tier"], BUDGET, SEEDS, METHODS
-        if sha256_file(sut) != q["model_sha256"]:
-            raise SystemExit("models/sut.zip does not match models/QUALIFIED.json")
+        sut, q = qualified_sut(ROOT)                 # model and controller exactly as qualified
+        tier, budget, seeds_, methods = q["tier"], BUDGET, SEEDS, METHODS
         root = ROOT / "runs/search"
     deadline = time.time() + args.hours * 3600
     plan = [(m, s) for s in seeds_ for m in methods]

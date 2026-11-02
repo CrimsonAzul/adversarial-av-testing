@@ -128,6 +128,33 @@ def test_controller_keeps_lane_and_executes_lane_changes(env):
         assert env.agent.lane_index[2] == start_lane - 1
 
 
+def test_controller_threshold_and_commitment():
+    """Which lane the controller steers for, on a fake 3-lane road (index 0 = leftmost)."""
+    from types import SimpleNamespace
+    from avtest.tactical import TacticalController
+    lanes = ["L", "M", "R"]
+    car = SimpleNamespace(navigation=SimpleNamespace(current_lane="M", current_ref_lanes=lanes))
+
+    default = TacticalController()
+    assert default.target_lane(car, -0.3) == "M" and default.target_lane(car, -0.6) == "R"
+    assert default.target_lane(car, 0.0) == "M"                  # without commitment a dropped command steers back
+    assert TacticalController(threshold=0.25).target_lane(car, -0.3) == "R"
+
+    committed = TacticalController(commit=True)
+    assert committed.target_lane(car, 0.7) == "L"
+    assert committed.target_lane(car, 0.0) == "L"                # still in M: the change goes on
+    assert committed.target_lane(car, 0.4) == "L"
+    assert committed.target_lane(car, -0.7) == "M" and committed.committed is None   # the other way cancels
+    assert committed.target_lane(car, 0.0) == "M"
+    assert committed.target_lane(car, 0.7) == "L"
+    car.navigation.current_lane = "L"                            # arrived
+    assert committed.target_lane(car, 0.0) == "L" and committed.committed is None
+    car.navigation.current_lane = "R"
+    assert committed.target_lane(car, -0.9) == "R" and committed.committed is None   # no lane further right
+    committed.reset()
+    assert committed.committed is None
+
+
 def test_teacher_through_tactical_labels_drives_like_itself(env):
     from avtest.drivers import CautiousIDMDriver
     from avtest.tactical import LabelledCautiousIDM, TacticalController, teacher_command

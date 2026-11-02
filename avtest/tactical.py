@@ -24,26 +24,51 @@ from .drivers import CautiousIDMPolicy
 
 LEFT, KEEP, RIGHT = 1.0, 0.0, -1.0
 THRESHOLD = 0.5
+# The controller of the system under test: part of its identity, so qualification records it in
+# QUALIFIED.json and the search runs refuse to start if it has changed since. Training keeps the
+# defaults (THRESHOLD, no commitment).
+SUT_CONTROLLER = {"threshold": THRESHOLD, "commit": False}
 
 
 class TacticalController:
-    def __init__(self):
+    """``threshold``: lane-command magnitude that starts a change. ``commit``: once a change starts, keep
+    steering for that lane until the ego is in it, so a command that falls back inside the threshold
+    mid-change no longer steers it back; only a command the other way cancels the change (LOG.md,
+    2026-11-02: the imitated command hovers near the threshold and flickers)."""
+
+    def __init__(self, threshold: float = THRESHOLD, commit: bool = False):
+        self.threshold, self.commit = threshold, commit
         self.reset()
 
     def reset(self):
         self.heading_pid = PIDController(1.7, 0.01, 3.5)
         self.lateral_pid = PIDController(0.3, .002, 0.05)
+        self.committed = None           # (direction, lane index) of a committed change under way
 
-    @staticmethod
-    def target_lane(vehicle, command: float):
+    def target_lane(self, vehicle, command: float):
         navigation = vehicle.navigation
         current = navigation.current_lane
         refs = navigation.current_ref_lanes
-        if current not in refs or abs(command) <= THRESHOLD:
+        if current not in refs:
+            self.committed = None
             return current
         index = refs.index(current)
-        index = max(index - 1, 0) if command > THRESHOLD else min(index + 1, len(refs) - 1)
-        return refs[index]
+        direction = 1 if command > self.threshold else -1 if command < -self.threshold else 0     # +1 = left
+        if self.committed is not None:
+            way, goal = self.committed
+            if index == goal or goal >= len(refs):
+                self.committed = None                 # arrived (or the lane ended): commands apply again
+            elif direction == -way:
+                self.committed = None                 # cancelled: back to the lane it is still in
+                return current
+            else:
+                return refs[goal]
+        if direction == 0:
+            return current
+        goal = max(index - 1, 0) if direction > 0 else min(index + 1, len(refs) - 1)
+        if self.commit and goal != index:
+            self.committed = (direction, goal)
+        return refs[goal]
 
     def low_level(self, vehicle, action) -> np.ndarray:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
