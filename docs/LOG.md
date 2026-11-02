@@ -263,3 +263,25 @@ PPO (started 21:29; about 50 min per 1M steps plus 5.6 min of validation):
 
 - T2 has not improved on the warm start (91.5% → 87.5–91.0%). T1 reached 99% at 2.3M and 3.3M, then fell to 93% at 4.3M.
 - These are validation results on 100 T1 scenes, not qualification. 99/100 has a Wilson 95% lower bound of about 94.5%, below the gate's 96%. Qualification uses 500 new held-out scenes.
+
+## 2026-11-02 — run d2, PPO session 2: validation fell after 2.3M steps; stopped at 11.8M
+
+Resumed at 01:34 with `train_driver --name d2 --hours 6` after removing `PAUSE`. Seven checkpoints were validated. The 11.3M checkpoint finished validating at 07:33, 5 h 59 min into the session, just inside the 6-hour budget, so a further chunk began (`--hours` is checked only at chunk boundaries). At 08:01 the author needed the laptop, so the run was stopped with a `STOP` file: `model_last.zip` was saved at 11,827,248 steps (510k into the unvalidated chunk) and the trainer exited cleanly. `STOP` was then removed.
+
+| Steps | Training success | Mean return | T2 | T1 | T1 failures | Policy std |
+|---|---|---|---|---|---|---|
+| 2.30M (session 1, best) | 91% | 35.2 | **91.0%** | 99% | 1 stuck | 0.216 |
+| 4.31M (session 1) | 90% | 34.5 | 89.0% | 93% | 5 collisions, 2 stuck | 0.209 |
+| 5.31M | 89% | 33.6 | 87.5% | 95% | 4 collisions, 1 stuck | 0.207 |
+| 6.31M | 89% | 33.8 | 81.5% | 91% | 7 collisions, 2 stuck | 0.204 |
+| 7.31M | 87% | 32.5 | 80.5% | 90% | 8 collisions, 2 stuck | 0.202 |
+| 8.31M | 88% | 33.2 | 84.0% | 91% | 7 collisions, 2 off-road | 0.201 |
+| 9.31M | 86% | 32.1 | 76.5% | 74% | 24 collisions, 2 off-road | 0.197 |
+| 10.32M | 85% | 31.0 | 76.5% | 77% | 21 collisions, 2 off-road | 0.194 |
+| 11.32M | 85% | 31.7 | 80.5% | 82% | 17 collisions, 1 off-road | 0.192 |
+
+- PPO is making the driver worse. After 2.3M steps, every measure declines together: T2 91% → 76–80%, T1 99% → 74–82%, training success 91% → 85%, and the mean training return 35.2 → 31.0. Because the return PPO maximises is also falling, this is not the policy exploiting the reward at the expense of success; the updates themselves are degrading it.
+- The extra failures are mostly collisions. On T2 cut-ins, success fell from 77% to 68–69%.
+- PPO diagnostics stayed within limits: approx KL 0.001–0.015 against `target_kl` 0.01, clip fraction 0.07–0.22, and explained variance 0.78–0.94. Meanwhile the action std fell steadily from 0.223 to 0.192, and the value loss rose from 0.64 to around 2.8–3.3.
+- `model_best.zip` is still the 2.3M checkpoint (91.0% T2, 99% T1 on the validation panels), saved 2026-11-01 23:10 and unchanged.
+- Continuing this PPO configuration is not worth another night. The next step needs a decision: qualify `model_best.zip` as it is, or first find out why PPO degrades the warm-started policy.
