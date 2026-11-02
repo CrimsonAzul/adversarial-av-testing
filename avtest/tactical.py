@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 from metadrive.component.vehicle.PID_controller import PIDController
+from metadrive.policy.idm_policy import FrontBackObjects
 from metadrive.utils.math import wrap_to_pi
 
 from .drivers import CautiousIDMPolicy
@@ -87,6 +88,66 @@ class LabelledCautiousIDM(CautiousIDMPolicy):
     def steering_control(self, target_lane) -> float:
         self.steered_lane = target_lane
         return super().steering_control(target_lane)
+
+
+class ScenePassingTeacher(LabelledCautiousIDM):
+    """The imitation teacher from run d3 on: cautious IDM that passes a stopped or near-stopped object in its
+    lane as soon as it is within view (MAX_LONG_DIST) and an adjacent lane is clear, whatever its own speed.
+
+    MetaDrive's IDM overtakes only once its own speed is 3 km/h off target. Under DAgger the student's speed
+    then decided the "change lane" label, so d2 learned to slow down first and pass late, with a label that
+    flipped at 17 km/h (LOG.md, 2026-11-02). This rule depends only on the scene."""
+
+    BLOCKED_KMH = 5.0
+
+    def move_to_next_road(self):
+        """On a new road, follow the lane that continues the current one. MetaDrive takes the first connected
+        lane, lane 0, and corrects a step later: a one-step 'change lane' label at every road boundary."""
+        lanes = self.control_object.navigation.current_ref_lanes
+        if self.routing_target_lane is not None and self.routing_target_lane not in lanes:
+            for lane in lanes:
+                if self.routing_target_lane.is_previous_lane_of(lane):
+                    self.routing_target_lane = lane
+                    return True
+        return super().move_to_next_road()
+
+    def lane_change_policy(self, all_objects):
+        navigation = self.control_object.navigation
+        lanes, next_lanes = navigation.current_ref_lanes, navigation.next_ref_lanes
+        if next_lanes is None or len(next_lanes) >= len(lanes):           # lane drops: MetaDrive's merge logic
+            near = FrontBackObjects.get_find_front_back_objs(all_objects, self.routing_target_lane,
+                                                             self.control_object.position, self.MAX_LONG_DIST, lanes)
+            blocker = near.front_object()
+            if blocker is not None and blocker.speed_km_h < self.BLOCKED_KMH:
+                index = lanes.index(self.routing_target_lane)
+                for step, exists, front, back, ahead in (
+                        (-1, near.left_lane_exist(), near.front_dist[0], near.back_dist[0], near.front_objs[0]),
+                        (1, near.right_lane_exist(), near.front_dist[-1], near.back_dist[-1], near.front_objs[-1])):
+                    clear = (exists and front > self.SAFE_LANE_CHANGE_DISTANCE and back > self.SAFE_LANE_CHANGE_DISTANCE
+                             and (ahead is None or ahead.speed_km_h >= self.BLOCKED_KMH))
+                    if clear:
+                        self.target_speed = self.NORMAL_SPEED
+                        return ahead, front, lanes[index + step]
+        return super().lane_change_policy(all_objects)
+
+
+TEACHERS = {"cautious_idm": LabelledCautiousIDM, "scene_passing": ScenePassingTeacher}
+
+
+class TeacherDriver:
+    """A teacher driving through its own tactical labels and this controller: the best a perfect student can do."""
+
+    def __init__(self, teacher: str):
+        self.name, self.policy_class = f"teacher_{teacher}", TEACHERS[teacher]
+
+    def start(self, env):
+        self.policy = self.policy_class(env.agent, env.scenario.map_seed)
+        self.controller = TacticalController()
+
+    def act(self, env, obs):
+        _, acceleration = self.policy.act(env.agent.id)
+        return self.controller.low_level(env.agent, [teacher_command(self.policy, env.agent),
+                                                     float(np.clip(acceleration, -1, 1))])
 
 
 def teacher_command(policy: LabelledCautiousIDM, vehicle) -> float:

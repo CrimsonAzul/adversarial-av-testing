@@ -3,8 +3,9 @@
     .venv\\Scripts\\python.exe -m scripts.diagnose_obstacles --model runs\\driver\\d2\\model_best.zip --attempt 1 --tier T1
 
 Runs every obstacle scene of a failed qualification attempt (development data after the failure,
-docs/DESIGN.md) whose obstacle stands in the ego's lane, with the SUT, IDM and the cautious-IDM
-imitation teacher. Measures, without reference to any driver's internals:
+docs/DESIGN.md) whose obstacle stands in the ego's lane, with the SUT, IDM, cautious IDM, and both
+imitation teachers driving through their own tactical labels (avtest.tactical.TeacherDriver, the
+best a perfect student could do). Measures, without reference to any driver's internals:
 
 - ``left_at_m``: distance to the stopped vehicle, along the route, at the last step the ego's
   centre was within 1 m of the obstacle lane's centre line, i.e. where it finally moved out
@@ -42,10 +43,13 @@ def run(task: dict) -> dict:
     from metadrive.component.lane.circular_lane import CircularLane
     from avtest import scenario as sc, seeds
     from avtest.drivers import CautiousIDMDriver, IDMDriver
+    from avtest.tactical import TeacherDriver
     env = _worker["env"]
     scene = sc.decode(np.asarray(task["theta"]), seeds.check(task["map_seed"], "qual"), task["tier"])
     out = {"row": task["row"], "map": scene.values["map"], "lanes": scene.values["lane_num"]}
-    for name, driver in (("sut", _worker["sut"]), ("idm", IDMDriver()), ("idm_cautious", CautiousIDMDriver())):
+    drivers = (("sut", _worker["sut"]), ("idm", IDMDriver()), ("idm_cautious", CautiousIDMDriver()),
+               ("teacher_cautious_idm", TeacherDriver("cautious_idm")), ("teacher_scene_passing", TeacherDriver("scene_passing")))
+    for name, driver in drivers:
         env.load(scene)
         obs, info = env.reset()
         driver.start(env)
@@ -100,11 +104,11 @@ def main() -> None:
     for label, sub in (("straight", [r for r in results if not r["curve"]]), ("curve", [r for r in results if r["curve"]]),
                        ("all", results)):
         print(f"{label} ({len(sub)} scenes)")
-        for name in ("sut", "idm", "idm_cautious"):
+        for name in ("sut", "idm", "idm_cautious", "teacher_cautious_idm", "teacher_scene_passing"):
             left = [r[name]["left_at_m"] for r in sub if r[name]["left_at_m"] is not None and r[name]["outcome"] != "stuck"]
             ok = sum(r[name]["outcome"] == "success" for r in sub)
             spread = f"median {np.median(left):.1f} m, 10th percentile {np.percentile(left, 10):.1f} m" if left else "n/a"
-            print(f"  {name:12s} success {ok}/{len(sub)}; leaves the obstacle lane at {spread}")
+            print(f"  {name:21s} success {ok}/{len(sub)}; leaves the obstacle lane at {spread}")
         print(f"  SUT scenes with an abort: {sum(r['sut']['aborts'] > 0 for r in sub)}")
     failed = [r for r in results if r["sut"]["outcome"] != "success"]
     print("SUT failures:", [(r["row"], r["map"], r["sut"]["outcome"], r["sut"]["crash"], round(r["sut"]["left_at_m"] or -1, 1))

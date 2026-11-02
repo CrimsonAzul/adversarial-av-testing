@@ -411,3 +411,47 @@ MetaDrive's IDM overtakes only when its own speed differs from its 20 km/h targe
 - **`JsonlLog` fix.** A hard kill can leave a torn last line. A resumed run appended after it, which made every later row unreadable; qualification resumes through the same class. `append` now drops a torn tail first. The new test fails without the fix.
 - **`evaluate_controller` resumes.** It appends each result as it arrives; checked with a simulated torn write, after which each of the 6 results was present exactly once.
 - Full test suite: 33 passed.
+
+## 2026-11-02 — a scene-based teacher, and a simulator leak between episodes
+
+**New imitation teacher** (`avtest.tactical.ScenePassingTeacher`, now the default of `scripts.pretrain_bc --teacher`). It is cautious IDM with two changes:
+
+1. It passes a stopped or near-stopped object (below 5 km/h) in its lane as soon as the object is within its 30 m view and an adjacent lane is clear (front and back gaps over 15 m, no blocked object ahead), whatever its own speed.
+2. On entering a new road it follows the lane that continues its current one. MetaDrive takes the first connected lane (lane 0) and corrects a step later, which produced a one-step "change lane" label at every road boundary.
+
+Run d2's teacher stays available as `--teacher cautious_idm`.
+
+**Simulator leak found and fixed** (`avtest/sim.py`).
+
+- MetaDrive recycles objects between episodes and keeps their velocity. A warning triangle hit in an earlier episode reported about 5.4 km/h in the next one.
+- IDM-based drivers read object speeds: the references, background traffic and the imitation teacher. So their results depended on what the worker process had run before. This explains the run-to-run variation reported earlier (cautious IDM 68 vs 76 of 77 scenes).
+- It also affected qualification attempt 1's reference runs, and therefore which scenes counted as solvable. Driven through its own labels with the fix in place, cautious IDM completes all 498 T1 scenes that attempt 1 counted as solvable; as a reference in attempt 1, under the leak, it completed 93.8% of them.
+- The SUT's observation contains no object speeds, so its own results should not be directly affected.
+- The new teacher first showed the leak: its rule fired only in the first scene of each worker.
+- **Fix:** the triangle's velocity is set to zero when it is spawned. `test_recycled_obstacle_objects_start_at_rest` hits a triangle, starts a new episode and checks the recycled triangle is at rest; it fails without the fix.
+
+**Teacher labels along the d2 driver's own drive** (`scripts/diagnose_labels.py`, 77 T1 own-lane obstacle scenes, fix in place):
+
+| Teacher | First sustained "change lane" label | Scenes where the label flips back | One-step label blips per scene |
+|---|---|---|---|
+| cautious IDM (d2) | median 26.7 m (10th–90th pct 16.6–28.5 m); none within 50 m in 12 scenes | 47 | 3.5 |
+| scene-passing (new) | median 37.7 m (37.5–38.0 m), in all 77 scenes | 4 | 0.1 |
+
+**Teachers driving through their own tactical labels**, i.e. what a perfect student would achieve (`evaluate_controller --settings teacher:...`, attempt-1 dev panels; 2,000 episodes, 46 min):
+
+| Teacher | T1 (498 solvable) | T2 (468 solvable) |
+|---|---|---|
+| cautious IDM | 100.0% | 97.0% (12 collisions, 2 stuck) |
+| scene-passing | 100.0% | 97.2% (10 collisions, 3 stuck) |
+
+- **T1 is reachable:** a student that learns the new labels well can pass the T1 gate.
+- **T2 is not:** neither teacher reaches the 98% gate there.
+- **Validation is unaffected:** each scene is evaluated once (no replays) and training does not use these panels.
+
+**Also:**
+
+- **Collector fix:** `pretrain_bc._collect` now closes its simulator if an error occurs. A failing collection test had left MetaDrive's one engine per process open and made 9 later tests error.
+- **New test:** `test_scene_passing_teacher_moves_over_as_soon_as_it_sees_the_obstacle` checks a success and a first "change lane" label 30–40 m before the stopped car.
+- Full test suite: 35 passed.
+
+**Next:** run d3, which is imitation with the new teacher and otherwise d2's settings (6 rounds × 600 episodes, T2), about 1.6 h. Then evaluate on the T1 development panel and, if strong, qualify as attempt 2. PPO is skipped for now, because it degraded d2.

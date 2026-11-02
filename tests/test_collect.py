@@ -18,7 +18,7 @@ class BrakingTeacher(IDMPolicy):
 def test_failed_teacher_demonstrations_are_dropped(monkeypatch):
     import avtest.tactical
     from avtest.sim import OBS_DIM
-    monkeypatch.setattr(avtest.tactical, "LabelledCautiousIDM", BrakingTeacher)
-    result = pretrain_bc._collect({"seed": 1, "episodes": 2, "model": None, "beta": 1.0})
+    monkeypatch.setitem(avtest.tactical.TEACHERS, "scene_passing", BrakingTeacher)
+    result = pretrain_bc._collect({"seed": 1, "episodes": 2, "model": None, "beta": 1.0, "teacher": "scene_passing"})
     assert [o for _, o in result["outcomes"]] == ["stuck", "stuck"]
     assert result["obs"].shape == (0, OBS_DIM) and result["act"].shape == (0, 2)

@@ -2,8 +2,9 @@
 
     .venv\\Scripts\\python.exe -m scripts.evaluate_controller --model runs\\driver\\d2\\model_best.zip --attempt 1 --tier T1 --settings 0.5:off,0.5:on,0.35:on,0.25:on
 
-Each setting is threshold:commit (avtest.tactical.TacticalController). Every panel scene is driven by
-the SUT with each setting; success is counted, as in the qualification gate, over the scenes at least
+Each setting is threshold:commit (avtest.tactical.TacticalController) for the SUT, or teacher:<name>
+for an imitation teacher driving through its own tactical labels (avtest.tactical.TEACHERS). Every
+panel scene is driven with each setting; success is counted, as in the qualification gate, over the scenes at least
 one reference driver completed in that attempt (their reference runs are reused, not repeated). Also
 reported: collision/off-road rate, success per event, and lane changes per episode, which would rise
 if a lower threshold made the driver weave. The panel was failed, so tuning on it is allowed
@@ -39,9 +40,13 @@ def _init(model: str):
 
 def run(task: dict) -> dict:
     from avtest import scenario as sc, seeds
-    from avtest.tactical import TacticalController
-    env, driver = _worker["env"], _worker["sut"]
-    driver.controller = TacticalController(threshold=task["threshold"], commit=task["commit"])
+    from avtest.tactical import TacticalController, TeacherDriver
+    env = _worker["env"]
+    if task["teacher"]:
+        driver = TeacherDriver(task["teacher"])
+    else:
+        driver = _worker["sut"]
+        driver.controller = TacticalController(threshold=task["threshold"], commit=task["commit"])
     env.load(sc.decode(np.asarray(task["theta"]), seeds.check(task["map_seed"], "qual"), task["tier"]))
     obs, info = env.reset()
     driver.start(env)
@@ -71,8 +76,8 @@ def main() -> None:
     solvable = {i for i, r in enumerate(rows) if any(ref["outcome"] == "success" for ref in r["references"])}
     settings = []
     for item in args.settings.split(","):
-        threshold, commit = item.split(":")
-        settings.append((item, float(threshold), commit == "on"))
+        first, second = item.split(":")
+        settings.append((item, None, False, second) if first == "teacher" else (item, float(first), second == "on", None))
     # results are appended as they arrive, so an interrupted comparison continues where it stopped
     out = ROOT / "runs/diagnose" / f"attempt{args.attempt}_{args.tier}_controller.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -82,9 +87,9 @@ def main() -> None:
     if any(r["model_sha256"] != model_hash for r in previous):
         raise SystemExit(f"{out} holds results of another model; move it away first")
     done = {(r["setting"], r["row"]) for r in previous}
-    tasks = [{"setting": name, "threshold": threshold, "commit": commit, "row": i, "theta": r["theta"],
-              "map_seed": r["map_seed"], "tier": args.tier}
-             for name, threshold, commit in settings for i, r in enumerate(rows) if (name, i) not in done]
+    tasks = [{"setting": name, "threshold": threshold, "commit": commit, "teacher": teacher, "row": i,
+              "theta": r["theta"], "map_seed": r["map_seed"], "tier": args.tier}
+             for name, threshold, commit, teacher in settings for i, r in enumerate(rows) if (name, i) not in done]
     print(f"{len(rows)} scenes, {len(solvable)} solvable by a reference (attempt {args.attempt}); "
           f"{len(tasks)} episodes to run, {len(done)} already in {out}", flush=True)
     if tasks:
@@ -94,7 +99,7 @@ def main() -> None:
                 if k % 100 == 0:
                     print(f"  {k}/{len(tasks)} episodes", flush=True)
     results = log.read()
-    for name, _, _ in settings:
+    for name, *_ in settings:
         mine = [r for r in results if r["setting"] == name and r["row"] in solvable]
         ok = sum(r["outcome"] == "success" for r in mine)
         crashes = sum(r["outcome"] in ("collision", "offroad") for r in mine)

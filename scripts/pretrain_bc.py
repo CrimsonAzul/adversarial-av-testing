@@ -1,4 +1,4 @@
-"""Warm start for the driver: imitation of the cautious-IDM teacher with DAgger, before PPO.
+"""Warm start for the driver: imitation of a cautious-IDM teacher with DAgger, before PPO.
 
     .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2                 # ~2–2.5 h, resumable
     .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2 --check         # few-minute pipeline check
@@ -6,9 +6,12 @@
 
 The student sees lidar, lane lines, road edges, its own state and the 4 nearest vehicles
 (avtest.sim), as PPO does. It outputs tactical decisions (lane command, throttle/brake;
-avtest.tactical), and a PID controller steers. The teacher (MetaDrive IDM with cautious
-settings) reads privileged map state; at every visited state it is labelled with the lane it
-steers for (left/keep/right of the ego's current lane) and its throttle/brake. The teacher drives
+avtest.tactical), and a PID controller steers. The teacher (--teacher, avtest.tactical.TEACHERS)
+reads privileged map state; at every visited state it is labelled with the lane it steers for
+(left/keep/right of the ego's current lane) and its throttle/brake. Default ``scene_passing``:
+MetaDrive IDM with cautious settings that passes a stopped object in its lane as soon as it sees
+it; run d2 used plain cautious IDM (``cautious_idm``), whose overtaking depends on its own speed,
+which under DAgger is the student's (docs/LOG.md, 2026-11-02). The teacher drives
 through the same controller with those labels, which reproduces its own driving: 40/42 successes
 either way (docs/LOG.md, 2026-11-01).
 Round 0 lets the teacher drive. In rounds 1..R the student drives, with the teacher taking
@@ -27,9 +30,9 @@ After every round: validation on the fixed 200-scene panel and recordings of the
 showcase scenarios (avtest.progress), logged to bc_log.jsonl and charted in bc_progress.png.
 At the end the round with the best validation becomes model_last.zip, PPO's starting point.
 
-Disclosure: the teacher is also one of the three reference drivers. Avoidability needs any
-one reference to complete a scene, so this cannot make a failure look valid; it can only
-make the SUT share some of the cautious IDM's blind spots (reported in the thesis).
+Disclosure: the teacher is (a variant of) cautious IDM, one of the three reference drivers.
+Avoidability needs any one reference to complete a scene, so this cannot make a failure look
+valid; it can only make the SUT share some of the cautious IDM's blind spots (reported in the thesis).
 """
 from __future__ import annotations
 
@@ -60,33 +63,35 @@ def _collect(task: dict) -> dict:
     env = AVTestEnv()
     student = PPO.load(task["model"], device="cpu") if task["model"] else None
     obs_list, act_list, outcomes = [], [], []
-    for _ in range(task["episodes"]):
-        episode_obs, episode_act = [], []
-        env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
-        obs, _ = env.reset()
-        teacher = tactical.LabelledCautiousIDM(env.agent, env.scenario.map_seed)
-        controller = tactical.TacticalController()
-        teacher_drives = student is None or rng.random() < task["beta"]
-        step = 0
-        while True:
-            _, acceleration = teacher.act(env.agent.id)        # also records the lane the teacher steers for
-            label = np.array([tactical.teacher_command(teacher, env.agent), np.clip(acceleration, -1, 1)],
-                             dtype=np.float32)
-            if step % KEEP_EVERY == 0:
-                episode_obs.append(obs.astype(np.float16))
-                episode_act.append(label)
-            decision = label if teacher_drives else student.predict(obs, deterministic=True)[0]
-            obs, _, term, trunc, info = env.step(controller.low_level(env.agent, decision))
-            step += 1
-            if term or trunc:
-                outcomes.append((bool(teacher_drives), info["outcome"]))
-                break
-        # a demonstration the teacher failed teaches the failure: keep only successful teacher episodes;
-        # student-driven episodes are kept (DAgger needs the teacher's corrections from the student's mistakes)
-        if not teacher_drives or info["outcome"] == "success":
-            obs_list.extend(episode_obs)
-            act_list.extend(episode_act)
-    env.close()
+    try:
+        for _ in range(task["episodes"]):
+            episode_obs, episode_act = [], []
+            env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
+            obs, _ = env.reset()
+            teacher = tactical.TEACHERS[task["teacher"]](env.agent, env.scenario.map_seed)
+            controller = tactical.TacticalController()
+            teacher_drives = student is None or rng.random() < task["beta"]
+            step = 0
+            while True:
+                _, acceleration = teacher.act(env.agent.id)        # also records the lane the teacher steers for
+                label = np.array([tactical.teacher_command(teacher, env.agent), np.clip(acceleration, -1, 1)],
+                                 dtype=np.float32)
+                if step % KEEP_EVERY == 0:
+                    episode_obs.append(obs.astype(np.float16))
+                    episode_act.append(label)
+                decision = label if teacher_drives else student.predict(obs, deterministic=True)[0]
+                obs, _, term, trunc, info = env.step(controller.low_level(env.agent, decision))
+                step += 1
+                if term or trunc:
+                    outcomes.append((bool(teacher_drives), info["outcome"]))
+                    break
+            # a demonstration the teacher failed teaches the failure: keep only successful teacher episodes;
+            # student-driven episodes are kept (DAgger needs the teacher's corrections from the student's mistakes)
+            if not teacher_drives or info["outcome"] == "success":
+                obs_list.extend(episode_obs)
+                act_list.extend(episode_act)
+    finally:                          # an error must not leave the engine open (one per process)
+        env.close()
     return {"obs": np.asarray(obs_list, dtype=np.float16).reshape(-1, OBS_DIM),
             "act": np.asarray(act_list, dtype=np.float32).reshape(-1, 2), "outcomes": outcomes}
 
@@ -140,6 +145,7 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--check", action="store_true")
     p.add_argument("--pilot", action="store_true", help="3 rounds x 240 episodes, 100-scene validation")
+    p.add_argument("--teacher", default="scene_passing", choices=("scene_passing", "cautious_idm"))
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
@@ -156,7 +162,8 @@ def main() -> None:
     if (out / "train_log.jsonl").exists():
         raise SystemExit(f"{out} already has PPO training; pretrain into a new --name")
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
-                "tier": TIER, "teacher": "idm_cautious", "drop_teacher_failures": True, "val_panel": panel,
+                "tier": TIER, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
+                "drop_teacher_failures": True, "val_panel": panel,
                 "action": "tactical", "lane_change_weight": LANE_CHANGE_WEIGHT}
     if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
         raise SystemExit(f"{out} was started with other settings; use a new --name")
@@ -184,7 +191,7 @@ def main() -> None:
         t0 = time.time()
         current = None if rnd == 0 else str(out / "model_last.zip")
         per = max(1, args.episodes // args.workers)
-        tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd}
+        tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd, "teacher": args.teacher}
                  for w in range(args.workers)]
         with ctx.Pool(args.workers) as pool:
             results = pool.map(_collect, tasks)

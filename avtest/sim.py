@@ -162,8 +162,12 @@ class EventManager(BaseManager):
             heading = self._heading(self.s)
             self.npc = self.spawn_object(DefaultVehicle, vehicle_config={}, position=self._point(self.s), heading=heading)
             lane = self.path.lanes[int(np.searchsorted(self.path.starts, max(self.s - 8.0, 0.0), side="right") - 1)]
-            self.spawn_object(TrafficWarning, position=self._point(self.s - 8.0), heading_theta=heading, lane=lane,
-                              static=True)
+            warning = self.spawn_object(TrafficWarning, position=self._point(self.s - 8.0), heading_theta=heading,
+                                        lane=lane, static=True)
+            # MetaDrive recycles objects between episodes and keeps their velocity: a triangle hit in an earlier
+            # episode reported ~5 km/h here, and IDM-based drivers (references, traffic, the imitation teacher)
+            # read that speed, so results depended on what the worker ran before (LOG.md, 2026-11-02)
+            warning.set_velocity([math.cos(heading), math.sin(heading)], 0.0)
         else:
             self.phase = "escort"
             self.s = ego_s + self.values["event_ahead_m"]

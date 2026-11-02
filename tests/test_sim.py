@@ -128,6 +128,25 @@ def test_controller_keeps_lane_and_executes_lane_changes(env):
         assert env.agent.lane_index[2] == start_lane - 1
 
 
+def test_recycled_obstacle_objects_start_at_rest(env):
+    """MetaDrive recycles objects between episodes; a warning triangle hit earlier kept ~5 km/h, which IDM-based
+    drivers read, so results depended on what the worker ran before (LOG.md, 2026-11-02)."""
+    from metadrive.component.static_object.traffic_object import TrafficWarning
+    from avtest.tactical import KEEP, TacticalController
+    env.load(scene("obstacle", event_lane=0.0, event_ahead=0.0, traffic_density=0.0))
+    env.reset()
+    controller = TacticalController()
+    while True:                                     # keep the lane at full throttle: straight into the triangle
+        _, _, term, trunc, info = env.step(controller.low_level(env.agent, [KEEP, 1.0]))
+        if term or trunc:
+            break
+    assert info["crash_object"]
+    env.load(scene("obstacle", event_lane=0.0, event_ahead=0.6, traffic_density=0.0))
+    env.reset()
+    warnings = list(env.engine.get_objects(lambda o: isinstance(o, TrafficWarning)).values())
+    assert warnings and all(w.speed_km_h == 0.0 for w in warnings)
+
+
 def test_controller_threshold_and_commitment():
     """Which lane the controller steers for, on a fake 3-lane road (index 0 = leftmost)."""
     from types import SimpleNamespace
@@ -170,6 +189,26 @@ def test_teacher_through_tactical_labels_drives_like_itself(env):
         if term or trunc:
             break
     assert full["outcome"] == "success" and info["outcome"] == "success"
+
+
+def test_scene_passing_teacher_moves_over_as_soon_as_it_sees_the_obstacle(env):
+    """The d3 teacher labels 'change lane' when the warning triangle (8 m before the stopped car) enters its
+    30 m view, about 38 m before the car, not after it has slowed down (LOG.md, 2026-11-02)."""
+    from avtest.tactical import TeacherDriver, teacher_command
+    env.load(scene("obstacle", event_lane=0.0, event_ahead=0.6, traffic_density=0.0))
+    obs, _ = env.reset()
+    driver = TeacherDriver("scene_passing")
+    driver.start(env)
+    events = env.engine.managers["event_manager"]
+    first_change = None
+    while True:
+        obs, _, term, trunc, info = env.step(driver.act(env, obs))
+        if first_change is None and teacher_command(driver.policy, env.agent) != 0:
+            first_change = events.s - events.ego_path.project(env.agent.position)
+        if term or trunc:
+            break
+    assert info["outcome"] == "success"
+    assert 30 < first_change < 40
 
 
 def test_reused_environment_does_not_leak_between_scenarios(env):
