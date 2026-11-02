@@ -311,3 +311,25 @@ Decision (author): qualify `runs/driver/d2/model_best.zip`, the 2.3M PPO checkpo
 
   Rerunning the same command with backslashes in the path continued without rerunning any scene. Running the 3.3M checkpoint on the same attempt was refused ("holds a different panel or model"), so the guard still works. `runs/qualification/attempt98_*` and `attempt99_T2` are pipeline checks, not attempts.
 - **Expected duration of attempt 1:** about 40 min (T3) + 35 min (T2) + 20 min (T1) with 4 workers, about 1.5–2 h in all.
+
+## 2026-11-02 — qualification attempt 1: FAIL at every tier
+
+`scripts.qualify --model runs\driver\d2\model_best.zip --attempt 1` (the 2.3M PPO checkpoint, sha256 `035452fb8908…`). It ran from 09:02 to 10:57 with no errors: T3 took 37 min, T2 42 min and T1 36 min. No tier passed, so nothing was frozen (`models/` was not created). Under the DESIGN.md rule, the attempt-1 panel is now development data, and the next test needs a new panel (`--attempt 2`).
+
+| Tier | Solvable scenes | SUT success | Wilson low (gate 0.96) | Collision/off-road (gate 2%) | Failures |
+|---|---|---|---|---|---|
+| T3 | 417 | 80.3% | 0.763 | 19.2% | 66 collisions, 14 off-road, 2 stuck |
+| T2 | 468 | 94.0% | 0.915 | 4.7% | 20 collisions, 2 off-road, 6 stuck |
+| T1 | 498 | 95.6% | 0.934 | 4.2% | 21 collisions, 1 stuck |
+
+**What fails on T1** (22 failures, 20 of them reproduced exactly on replay):
+
+- **Static obstacles cause most failures:** 18 of the 22 (17 collisions, 1 stuck). The SUT succeeds on 92.4% of obstacle scenes and 98.5% of lead-brake scenes.
+- **Nearly all failures are on curves.** On maps that start with a curve, the SUT succeeds 222/241 times (92.1%), against 254/257 (98.8%) on the other maps. 19 of the 22 failures are on curve-first maps, including all 4 lead-brake collisions. The SSS and SSC maps had no failures.
+- **Obstacles in failures are further ahead:** a median of 81 m in failed scenes against 41 m in successes, so the obstacle is typically around the curve. In 11 of the 18 obstacle failures it is in the SUT's own lane.
+- **References on T1 obstacle scenes:** IDM succeeds on 97.0%, cautious IDM (the imitation teacher) on 86.9%, the expert on 63.3%. The SUT, at 92.4%, beats its teacher but not IDM. On all solvable T1 scenes, IDM alone succeeds on 98.4%, so the T1 gate is reachable.
+- **Validation was optimistic on T1.** It gave 99/100, but the Wilson interval for that result is [0.945, 0.998], which includes the qualification result of 95.6%. 100 validation scenes cannot tell 96% from 99%.
+
+**Next:**
+- Continue training and re-test on a new panel. If T1 still fails on 2026-11-14, narrow its ranges in a logged decision.
+- PPO in its current configuration degrades the driver (see the earlier 2026-11-02 entry), so the next training step must address both the curve and obstacle weakness and that degradation.
