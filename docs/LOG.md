@@ -285,3 +285,29 @@ Resumed at 01:34 with `train_driver --name d2 --hours 6` after removing `PAUSE`.
 - PPO diagnostics stayed within limits: approx KL 0.001–0.015 against `target_kl` 0.01, clip fraction 0.07–0.22, and explained variance 0.78–0.94. Meanwhile the action std fell steadily from 0.223 to 0.192, and the value loss rose from 0.64 to around 2.8–3.3.
 - `model_best.zip` is still the 2.3M checkpoint (91.0% T2, 99% T1 on the validation panels), saved 2026-11-01 23:10 and unchanged.
 - Continuing this PPO configuration is not worth another night. The next step needs a decision: qualify `model_best.zip` as it is, or first find out why PPO degrades the warm-started policy.
+
+## 2026-11-02 — checks before qualification attempt 1
+
+Decision (author): qualify `runs/driver/d2/model_best.zip`, the 2.3M PPO checkpoint (validation 91.0% T2, 99% T1), rather than train further first.
+
+- **Model identity:** `model_best.zip` and `checkpoints/steps_0002304000.zip` have the same policy weights (compared tensor by tensor; the 3.3M checkpoint differs). The zip files themselves hash differently only because they were written at different times.
+- **Same driver code as validation:** qualification and validation both evaluate through `avtest.evaluate.Evaluator` and `drivers.SUTDriver` (tactical policy, deterministic). Qualification also runs all three references on every scene and replays every SUT failure.
+- **Gate test added** (`tests/test_core.py::test_qualification_gate_counts_only_solvable_scenes`):
+  - 490/500 passes, 489/500 fails;
+  - scenes no reference completes are excluded;
+  - 49/50 fails on the Wilson bound;
+  - no solvable scenes means no pass.
+  Loosening the success threshold to 97% or the Wilson threshold to 0.85 makes the test fail. A first version missed the 97% change because its 489/500 case also broke the crash limit; that case now fails only on the success rule.
+- **Resume trap fixed in `scripts/qualify.py`:**
+  - The panel fingerprint included the model path as typed, so resuming an interrupted attempt with the path spelled differently (`runs/driver/...` vs `runs\driver\...`) would have been refused with "use a new --attempt", wasting the attempt.
+  - The fingerprint now identifies the model by its SHA-256 only; the path is still written to `panel.json` for reference.
+- **Dry run** (`--attempt 98 --panel 8 --workers 2`, a check panel that is not a qualification attempt; with 8 scenes no tier can pass, so nothing is frozen or appended): 248 s for all three tiers, no errors.
+
+  | Tier | SUT success on solvable scenes | Unsolvable | Wall time per scene |
+  |---|---|---|---|
+  | T3 | 5/7 (3 collisions in all, 1 on an unsolvable scene) | 1 | 19.5 s |
+  | T2 | 7/7 | 1 (SUT collided there) | 17.3 s |
+  | T1 | 8/8 | 0 | 9.8 s |
+
+  Rerunning the same command with backslashes in the path continued without rerunning any scene. Running the 3.3M checkpoint on the same attempt was refused ("holds a different panel or model"), so the guard still works. `runs/qualification/attempt98_*` and `attempt99_T2` are pipeline checks, not attempts.
+- **Expected duration of attempt 1:** about 40 min (T3) + 35 min (T2) + 20 min (T1) with 4 workers, about 1.5–2 h in all.

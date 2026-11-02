@@ -63,13 +63,14 @@ def main() -> None:
     lines = []
     for tier in args.tiers.split(","):
         out = ROOT / "runs/qualification" / f"attempt{args.attempt}_{tier}"
+        # the model is identified by its hash, not its path, so a resume may spell the path differently
         panel = {"tier": tier, "attempt": args.attempt, "panel_seed": panel_seed, "map_seeds": map_seeds,
-                 "thetas": thetas.tolist(), "model": str(args.model), "model_sha256": model_hash}
+                 "thetas": thetas.tolist(), "model_sha256": model_hash}
         if (out / "panel.json").exists():
             if read_json(out / "panel.json")["sha256"] != sha256_json(panel):
                 raise SystemExit(f"{out} holds a different panel or model; use a new --attempt")
         else:
-            write_json(out / "panel.json", {"sha256": sha256_json(panel), **panel})
+            write_json(out / "panel.json", {"sha256": sha256_json(panel), "model": str(args.model), **panel})
         log = JsonlLog(out / "episodes.jsonl")
         done = log.read()
         if len(done) < len(map_seeds):

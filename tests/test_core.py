@@ -66,6 +66,26 @@ def test_discovery_counts_unique_cells_once():
     assert low < 0.98 < high
 
 
+def scene(sut, solvable=True):
+    refs = [{"outcome": "collision"}, {"outcome": "success" if solvable else "stuck"}]
+    return {"sut": {"outcome": sut}, "references": refs}
+
+
+def test_qualification_gate_counts_only_solvable_scenes():
+    from scripts.qualify import gate
+
+    passing = [scene("success")] * 490 + [scene("collision")] * 10
+    result = gate(passing)
+    assert result["passed"] and result["success_rate"] == 0.98 and result["wilson_95"][0] >= 0.96
+    assert not gate([scene("success")] * 489 + [scene("stuck")] * 11)["passed"]      # 97.8%: only the 98% rule fails
+    # scenes no reference completes are left out, whatever the SUT did on them
+    result = gate(passing + [scene("collision", solvable=False)] * 30 + [scene("success", solvable=False)] * 5)
+    assert result["passed"] and result["reference_solvable"] == 500 and result["unsolvable_scenes"] == 35
+    assert result["sut_success_on_unsolvable"] == 5
+    assert not gate([scene("success")] * 49 + [scene("stuck")])["passed"]      # 98% of 50: Wilson bound too low
+    assert not gate([scene("success", solvable=False)] * 10)["passed"]         # nothing solvable, nothing proven
+
+
 @pytest.mark.parametrize("name", ["random", "cmaes", "bo"])
 def test_ask_tell_adversaries_stay_in_bounds_and_resume_exactly(name):
     dim = scenario.DIM
