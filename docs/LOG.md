@@ -233,3 +233,33 @@ Checks before handing over: all tests, plus `pretrain_bc --check` and `train_dri
 ## 2026-11-01 — GitHub repository recreated
 
 The repository was deleted and recreated with the same name and the same history (7 commits). Early commits had carried a co-author line naming the AI assistant; rewriting the history removed it from `main`, but GitHub kept the old commits and kept listing the assistant as a contributor. Code and history are unchanged. The federated-learning repository was recreated the same way.
+
+## 2026-11-01/02 — run d2, night 2 (interim: paused at the author's request)
+
+Started 19:52 with the command from RUNBOOK (imitation, then `train_driver --hours 5`). Paused at 00:41 with a `PAUSE` file; the trainer finished validating the 4.3M checkpoint, logged it and exited cleanly. The `PAUSE` file must be removed before resuming with `train_driver --name d2` alone: `pretrain_bc` refuses a folder that already has PPO training, so the chained command would stop at once.
+
+Imitation (6 rounds × 600 episodes, 1 h 36 min in total; validation on the fixed panel, T2 200 scenes, T1 100):
+
+| Round | Samples | T2 | T1 | Lane-change recall |
+|---|---|---|---|---|
+| 0 (teacher drives) | 194,750 | 67.5% | 76% | 0.82 |
+| 1 | 390,463 | 82.0% | 83% | 0.85 |
+| 2 | 585,583 | 85.0% | 97% | 0.91 |
+| 3 | 775,706 | **91.5%** | 97% | 0.93 |
+| 4 | 983,947 | 89.5% | 100% | 0.88 |
+| 5 | 1,182,966 | 90.5% | 97% | 0.88 |
+
+Round 3 had the best T2 validation and became PPO's starting point. The best round is chosen on T2, as declared.
+
+PPO (started 21:29; about 50 min per 1M steps plus 5.6 min of validation):
+
+| Steps | Training success | T2 | T1 | T1 failures |
+|---|---|---|---|---|
+| 301k (critic warm-up) | 88% | — | — | — |
+| 1.30M | 89% | 87.5% | 97% | 3 collisions |
+| 2.30M | 91% | **91.0%** (best, `model_best.zip`) | 99% | 1 stuck |
+| 3.31M | 90% | 89.0% | 99% | 1 stuck |
+| 4.31M | 90% | 89.0% | 93% | 5 collisions, 2 stuck |
+
+- T2 has not improved on the warm start (91.5% → 87.5–91.0%). T1 reached 99% at 2.3M and 3.3M, then fell to 93% at 4.3M.
+- These are validation results on 100 T1 scenes, not qualification. 99/100 has a Wilson 95% lower bound of about 94.5%, below the gate's 96%. Qualification uses 500 new held-out scenes.
