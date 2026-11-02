@@ -58,6 +58,10 @@ def main() -> None:
     args = p.parse_args()
     from avtest.evaluate import Evaluator
 
+    from stable_baselines3 import PPO
+    from avtest.sim import OBS_DIM
+    if PPO.load(args.model, device="cpu").observation_space.shape[0] != OBS_DIM:
+        raise SystemExit("this driver uses the d1–d3 sensors; qualification records today's SUT_CONTROLLER and sensors")
     model_hash = sha256_file(args.model)
     panel_seed = 1000 + args.attempt
     map_seeds = seeds.panel_seeds("qual", args.panel, panel_seed)

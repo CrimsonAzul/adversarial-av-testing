@@ -455,3 +455,44 @@ Run d2's teacher stays available as `--teacher cautious_idm`.
 - Full test suite: 35 passed.
 
 **Next:** run d3, which is imitation with the new teacher and otherwise d2's settings (6 rounds × 600 episodes, T2), about 1.6 h. Then evaluate on the T1 development panel and, if strong, qualify as attempt 2. PPO is skipped for now, because it degraded d2.
+
+## 2026-11-02 (evening) — d3 shows the label fix works; the driver must now cruise at 60 km/h
+
+**d3 stopped after round 2.** It was imitation with the scene-passing teacher at 20 km/h.
+
+| d3 round | T2 validation | T1 validation | Time |
+|---|---|---|---|
+| 0 | 41% | 60% | 27 min |
+| 1 | 77.5% | 85% | 24 min |
+| 2 | 90.0% | 99% | 28 min |
+
+- **Speed of the run:** rounds take about 24–28 min against d2's 15–18, because collection with the new teacher is slower.
+- **On the 500 T1 dev scenes, round 2 reaches 97.4%** (485/498, Wilson low 0.956, 13 collisions), against d2's 95.5%. Obstacle scenes improve from 219 to 227 of 237.
+- **Lane changes come earlier and no longer waver.** The driver leaves an obstacle's lane at a median of 26.4 m (curves 22.5 m), against d2's 15.5 m (11.6 m). It wavers in 4 of 77 scenes, against 75.
+- **Why it was stopped:** the author decided the driver must cruise at at least 60 km/h. Rounds 3–5 at 20 km/h would not produce the final SUT, and the CPU was needed for the 60 km/h work. d3 resumes with the same command.
+
+**Decision (author): cruise at 60 km/h, slowing for curves.** MetaDrive curves have radii of 25–60 m, with inner lanes down to about 18 m. At 60 km/h that would need up to 1.1 g of lateral acceleration, so the drivers slow to a 0.3 g advisory speed in curves (31 km/h at 25 m, 48 km/h at 60 m).
+
+- **`avtest.drivers.RoadIDMPolicy`:** MetaDrive's IDM at 60 km/h.
+  - The target speed is capped at sqrt(3 m/s² × radius) in curves, and the driver slows at 2 m/s² before each one.
+  - It looks 80 m ahead, against MetaDrive's 30 m.
+  - Its following gap is computed in SI units. MetaDrive multiplies km/h by seconds, which at 60 km/h demands 100–165 m behind any vehicle.
+  - `CautiousRoadIDMPolicy` uses a 15 m standstill gap and a 2 s time gap.
+- **References from now on:** `RoadIDMDriver` (`idm60`), `CautiousRoadIDMDriver` (`idm_cautious60`) and the expert. A scene counts as avoidable only if a driver at the SUT's own cruise speed completes it. The 20/30 km/h references remain available, to reproduce attempt 1.
+- **Teacher `scene_passing_60`:** the scene-passing rules on top of the cautious 60 km/h IDM. It is now the default of `pretrain_bc`.
+- **Sensors:** 720 lidar beams to 100 m, against 240 to 50 m. A 1 m warning triangle was reliably hit only within about 38 m, 1.4 s at 60 km/h; at 0.5° spacing it is hit out to about 100 m. The observation grows from 320 to 800 values. `sim.sensor_config` gives each driver the sensors matching its input size, so d1–d3 keep running.
+- **Lane-change steering:** at 60 km/h the 60 km/h teacher, driving through its labels on the T1 dev scenes, completed only 96.0%: 14 off-road and 6 collisions. On T2 it completed 82.3%. Eleven of the 14 off-road failures happened during a lane change, 1.3–1.8 m off the lane centre.
+
+  A test of a single lane change on an empty straight road (overshoot past the target lane's centre, right change / left change):
+
+  | Steering | 30 km/h | 45 km/h | 60 km/h |
+  |---|---|---|---|
+  | Current (MetaDrive's lane-tracking PID) | 0.23 / 0.17 m | 0.00 / 0.36 m | off the road |
+  | Gains scaled by 30 / speed | 0.00 / 0.16 m | 0.00 / 0.51 m | 0.82 m, then off the end of the route |
+  | Lateral error capped at 1 m | 0.00 / 0.08 m | 0.00 / 0.16 m | 0.27 / 0.30 m |
+
+  The controller of the 60 km/h generation (`SUT_CONTROLLER`), its training environments and the 60 km/h references now cap the lateral error at 1 m. d1–d3 keep `LEGACY_CONTROLLER`. Qualification refuses a model with the old sensors, because it records today's controller and sensors.
+
+**Tests:** 39 pass. New ones cover the legacy sensors, cruising at 60 km/h within the curve limit, the 60 km/h teacher passing from about 80 m, and a 60 km/h lane change staying on the road.
+
+**Next:** the capped 60 km/h teacher and the three 60 km/h references on the T1 and T2 dev panels (running). If the teacher completes about 98% or more of the scenes some 60 km/h reference completes, train d4 overnight.

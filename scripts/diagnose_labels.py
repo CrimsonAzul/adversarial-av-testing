@@ -33,8 +33,9 @@ def _init(model: str):
     import torch  # noqa: F401
     torch.set_num_threads(1)
     from avtest.drivers import SUTDriver
-    from avtest.sim import AVTestEnv
-    _worker["env"], _worker["sut"] = AVTestEnv(), SUTDriver(Path(model))
+    from avtest.sim import AVTestEnv, sensor_config
+    sut = SUTDriver(Path(model))
+    _worker["env"], _worker["sut"] = AVTestEnv(sensor_config(sut.obs_size)), sut
 
 
 def run(task: dict) -> dict:

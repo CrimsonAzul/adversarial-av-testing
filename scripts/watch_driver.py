@@ -36,7 +36,7 @@ def decision_text(driver) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", type=Path, default=ROOT / "models/sut.zip", help="the AI driver (PPO checkpoint)")
-    p.add_argument("--driver", default="sut", choices=("sut", "idm", "idm_cautious", "expert"))
+    p.add_argument("--driver", default="sut", choices=("sut", "idm", "idm_cautious", "expert", "idm60", "idm_cautious60"))
     p.add_argument("--tier", default="T1", choices=sorted(sc.TIERS))
     p.add_argument("--scenes", type=int, default=20)
     p.add_argument("--seed", type=int, default=0, help="which random scenes; the same seed shows the same scenes")
@@ -45,10 +45,12 @@ def main() -> None:
     if args.driver == "sut" and not args.model.exists():
         raise SystemExit(f"{args.model} not found; pass --model, e.g. runs\\driver\\d3\\model_best_bc.zip")
     from avtest import drivers
-    from avtest.sim import DT, AVTestEnv
+    from avtest.sim import DT, AVTestEnv, sensor_config
     driver = {"sut": lambda: drivers.SUTDriver(args.model), "idm": drivers.IDMDriver,
-              "idm_cautious": drivers.CautiousIDMDriver, "expert": drivers.ExpertDriver}[args.driver]()
-    env = AVTestEnv({"use_render": True, "window_size": (1280, 800)})
+              "idm_cautious": drivers.CautiousIDMDriver, "expert": drivers.ExpertDriver,
+              "idm60": drivers.RoadIDMDriver, "idm_cautious60": drivers.CautiousRoadIDMDriver}[args.driver]()
+    sensors = sensor_config(driver.obs_size) if args.driver == "sut" else {}       # older drivers: their lidar
+    env = AVTestEnv({**sensors, "use_render": True, "window_size": (1280, 800)})
     rng = np.random.default_rng([args.seed, 7])
     tally = Counter()
     try:

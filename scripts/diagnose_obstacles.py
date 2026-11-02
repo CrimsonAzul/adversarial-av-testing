@@ -14,7 +14,7 @@ best a perfect student could do). Measures, without reference to any driver's in
 - for the SUT, ``aborts``: how often its lane command fell back inside ±0.5 while it was still
   in the obstacle's lane and already more than 0.3 m off its centre, which steers it back.
 
-Writes runs/diagnose/attempt<N>_<tier>_obstacles.jsonl and prints the summary.
+Writes runs/diagnose/attempt<N>_<tier>_obstacles_<model hash>.jsonl and prints the summary.
 """
 from __future__ import annotations
 
@@ -35,8 +35,9 @@ def _init(model: str):
     import torch  # noqa: F401
     torch.set_num_threads(1)
     from avtest.drivers import SUTDriver
-    from avtest.sim import AVTestEnv
-    _worker["env"], _worker["sut"] = AVTestEnv(), SUTDriver(Path(model))
+    from avtest.sim import AVTestEnv, sensor_config
+    sut = SUTDriver(Path(model))
+    _worker["env"], _worker["sut"] = AVTestEnv(sensor_config(sut.obs_size)), sut
 
 
 def run(task: dict) -> dict:
@@ -97,7 +98,8 @@ def main() -> None:
              if r["values"]["event"] == "obstacle" and r["values"]["event_lane"] == "same"]
     with mp.get_context("spawn").Pool(args.workers, initializer=_init, initargs=(str(args.model),)) as pool:
         results = pool.map(run, tasks, chunksize=1)
-    out = ROOT / "runs/diagnose" / f"attempt{args.attempt}_{args.tier}_obstacles.jsonl"
+    from avtest.records import sha256_file
+    out = ROOT / "runs/diagnose" / f"attempt{args.attempt}_{args.tier}_obstacles_{sha256_file(args.model)[:12]}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(json.dumps(r) + "\n" for r in results))
     print(f"{len(results)} scenes with the obstacle in the ego's lane -> {out}")

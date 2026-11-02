@@ -8,10 +8,11 @@ The student sees lidar, lane lines, road edges, its own state and the 4 nearest 
 (avtest.sim), as PPO does. It outputs tactical decisions (lane command, throttle/brake;
 avtest.tactical), and a PID controller steers. The teacher (--teacher, avtest.tactical.TEACHERS)
 reads privileged map state; at every visited state it is labelled with the lane it steers for
-(left/keep/right of the ego's current lane) and its throttle/brake. Default ``scene_passing``:
-MetaDrive IDM with cautious settings that passes a stopped object in its lane as soon as it sees
-it; run d2 used plain cautious IDM (``cautious_idm``), whose overtaking depends on its own speed,
-which under DAgger is the student's (docs/LOG.md, 2026-11-02). The teacher drives
+(left/keep/right of the ego's current lane) and its throttle/brake. Default ``scene_passing_60``:
+cautious IDM at 60 km/h, slowing for curves, that passes a stopped object in its lane as soon as it
+sees it (from d4). Run d3 used the same rules at 20 km/h (``scene_passing``); run d2 used plain
+cautious IDM (``cautious_idm``), whose overtaking depends on its own speed, which under DAgger is the
+student's (docs/LOG.md, 2026-11-02). The teacher drives
 through the same controller with those labels, which reproduces its own driving: 40/42 successes
 either way (docs/LOG.md, 2026-11-01).
 Round 0 lets the teacher drive. In rounds 1..R the student drives, with the teacher taking
@@ -69,7 +70,8 @@ def _collect(task: dict) -> dict:
             env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
             obs, _ = env.reset()
             teacher = tactical.TEACHERS[task["teacher"]](env.agent, env.scenario.map_seed)
-            controller = tactical.TacticalController()
+            controller = tactical.TacticalController(**(tactical.SUT_CONTROLLER if task["teacher"] == "scene_passing_60"
+                                                        else tactical.LEGACY_CONTROLLER))
             teacher_drives = student is None or rng.random() < task["beta"]
             step = 0
             while True:
@@ -145,7 +147,7 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--check", action="store_true")
     p.add_argument("--pilot", action="store_true", help="3 rounds x 240 episodes, 100-scene validation")
-    p.add_argument("--teacher", default="scene_passing", choices=("scene_passing", "cautious_idm"))
+    p.add_argument("--teacher", default="scene_passing_60", choices=("scene_passing_60", "scene_passing", "cautious_idm"))
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS

@@ -211,6 +211,56 @@ def test_scene_passing_teacher_moves_over_as_soon_as_it_sees_the_obstacle(env):
     assert 30 < first_change < 40
 
 
+def test_60_kmh_reference_cruises_and_slows_for_curves(env):
+    """RoadIDMPolicy: about 60 km/h where the road allows, never faster in a curve than its 0.3 g limit."""
+    import math
+    from metadrive.component.lane.circular_lane import CircularLane
+    from avtest.drivers import RoadIDMDriver, RoadIDMPolicy
+    names = [p.name for p in sc.PARAMS]
+    theta = sc.with_event(np.random.default_rng(3).random(sc.DIM), "obstacle", "T1")
+    theta[names.index("traffic_density")] = 0.0
+    theta[names.index("event_lane")] = 0.99                  # the obstacle is in another lane
+    for k in range(40):                                      # a map with at least one curve
+        s = sc.decode(theta, SEED + k, "T1")
+        if "C" in s.values["map"]:
+            break
+    env.load(s)
+    obs, _ = env.reset()
+    driver = RoadIDMDriver()
+    driver.start(env)
+    top, curve_excess = 0.0, []
+    while True:
+        obs, _, term, trunc, info = env.step(driver.act(env, obs))
+        speed, lane = env.agent.speed_km_h, env.agent.lane
+        top = max(top, speed)
+        if isinstance(lane, CircularLane):
+            curve_excess.append(speed - math.sqrt(RoadIDMPolicy.A_LAT * lane.radius) * 3.6)
+        if term or trunc:
+            break
+    assert info["outcome"] == "success"
+    assert 55 < top <= 63
+    assert curve_excess and max(curve_excess) < 5          # within 5 km/h of the curve limit (it brakes gently)
+
+
+def test_60_kmh_teacher_moves_over_from_80_m(env):
+    """At 60 km/h the teacher looks 80 m ahead: it starts passing when the triangle is about 80 m away."""
+    from avtest.tactical import TeacherDriver, teacher_command
+    env.load(scene("obstacle", event_lane=0.0, event_ahead=1.0, traffic_density=0.0))
+    obs, _ = env.reset()
+    driver = TeacherDriver("scene_passing_60")
+    driver.start(env)
+    events = env.engine.managers["event_manager"]
+    first_change = None
+    while True:
+        obs, _, term, trunc, info = env.step(driver.act(env, obs))
+        if first_change is None and teacher_command(driver.policy, env.agent) != 0:
+            first_change = events.s - events.ego_path.project(env.agent.position)
+        if term or trunc:
+            break
+    assert info["outcome"] == "success"
+    assert 70 < first_change < 95
+
+
 def test_reused_environment_does_not_leak_between_scenarios(env):
     """Evaluator workers reuse one environment for many scenarios; results must not depend on run order."""
     from avtest.drivers import CautiousIDMDriver
@@ -222,3 +272,33 @@ def test_reused_environment_does_not_leak_between_scenarios(env):
     again = run_episode(env, a, CautiousIDMDriver())
     assert (first["outcome"], first["steps"], first["event_triggered_step"]) == \
         (again["outcome"], again["steps"], again["event_triggered_step"])
+
+
+def test_60_kmh_lane_change_stays_on_the_road(env):
+    """With the SUT controller's 1 m lateral cap, lane changes at 60 km/h right and then left (towards the centre
+    line) stay on the road; MetaDrive's uncapped lane-tracking left the road (LOG.md, 2026-11-02)."""
+    from avtest.tactical import KEEP, LEFT, RIGHT, SUT_CONTROLLER, TacticalController
+    names = [p.name for p in sc.PARAMS]
+    theta = sc.with_event(np.random.default_rng(8).random(sc.DIM), "obstacle", "T1")
+    for name, value in (("traffic_density", 0.0), ("lane_num", 0.9), ("event_lane", 0.99), ("event_ahead", 1.0),
+                        ("block_1", 0.0), ("block_2", 0.0), ("block_3", 0.0)):
+        theta[names.index(name)] = value
+    env.load(sc.decode(theta, 100_005, "T1"))                 # three straight blocks, 3 lanes
+    env.reset()
+    controller = TacticalController(**SUT_CONTROLLER)
+    plan, start = [], env.agent.lane_index[2]
+    while True:
+        lane = env.agent.lane_index[2]
+        if not plan and env.agent.speed_km_h > 58:
+            plan = [(RIGHT, start + 1), (LEFT, start)]
+        command = KEEP
+        if plan and lane != plan[0][1]:
+            command = plan[0][0]
+        elif plan and len(plan) == 2:
+            plan.pop(0) if env.agent.lane.local_coordinates(env.agent.position)[1] ** 2 < 0.04 else None
+        throttle = float(np.clip(0.5 * (60 - env.agent.speed_km_h) / 3.6, -1, 1))
+        _, _, term, trunc, info = env.step(controller.low_level(env.agent, [command, throttle]))
+        if term or trunc:
+            break
+    assert info["outcome"] == "success"
+    assert len(plan) == 1 and env.agent.lane_index[2] == start     # both changes happened

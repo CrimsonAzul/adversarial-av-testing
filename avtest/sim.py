@@ -51,9 +51,20 @@ NEAREST_VEHICLES = 4           # object list: relative position/velocity of the 
 # of the road ahead; the pilot student weaved and crossed the centre line (docs/LOG.md, 2026-11-01).
 LANE_LINE_BEAMS, LANE_LINE_RANGE_M = 24, 20
 ROAD_EDGE_BEAMS, ROAD_EDGE_RANGE_M = 24, 50
-# MetaDrive's size formula (obs/state_obs.py): 259 by default; the road-edge beams replace its 2 edge
-# distances, the lane-line beams replace its 1 lane-centre offset, and each nearest vehicle adds 4
-OBS_DIM = 259 + 4 * NEAREST_VEHICLES + (ROAD_EDGE_BEAMS - 2) + (LANE_LINE_BEAMS - 1)
+# Lidar for the 60 km/h driver (d4 on; docs/LOG.md, 2026-11-02): 720 beams (0.5° apart) to 100 m. A 1 m
+# warning triangle is hit by a beam out to about 100 m; the 240 beams to 50 m of d1–d3 saw it reliably only
+# within ~38 m, 1.4 s at 60 km/h. Older drivers keep their sensor (sensor_config).
+LIDAR_BEAMS, LIDAR_RANGE_M = 720, 100
+LEGACY_LIDAR = {"num_lasers": 240, "distance": 50}
+
+
+def obs_dim(lidar_beams: int) -> int:
+    # MetaDrive's size formula (obs/state_obs.py): 259 with 240 lidar beams; the road-edge beams replace its 2
+    # edge distances, the lane-line beams replace its 1 lane-centre offset, and each nearest vehicle adds 4
+    return 259 + (lidar_beams - 240) + 4 * NEAREST_VEHICLES + (ROAD_EDGE_BEAMS - 2) + (LANE_LINE_BEAMS - 1)
+
+
+OBS_DIM = obs_dim(LIDAR_BEAMS)
 
 BASE_CONFIG = dict(
     use_render=False, log_level=50, store_map=False, start_seed=0, num_scenarios=seeds.SPLITS["heldout"][1],
@@ -63,10 +74,21 @@ BASE_CONFIG = dict(
     crash_vehicle_penalty=FAILURE_PENALTY, crash_object_penalty=FAILURE_PENALTY,
     crash_sidewalk_penalty=FAILURE_PENALTY, driving_reward=PROGRESS_REWARD_PER_M, speed_reward=SPEED_REWARD,
     use_lateral_reward=True,
-    vehicle_config={"lidar": {"num_lasers": 240, "distance": 50, "num_others": NEAREST_VEHICLES},
+    vehicle_config={"lidar": {"num_lasers": LIDAR_BEAMS, "distance": LIDAR_RANGE_M, "num_others": NEAREST_VEHICLES},
                     "lane_line_detector": {"num_lasers": LANE_LINE_BEAMS, "distance": LANE_LINE_RANGE_M},
                     "side_detector": {"num_lasers": ROAD_EDGE_BEAMS, "distance": ROAD_EDGE_RANGE_M}},
 )
+
+
+def sensor_config(obs_size: int) -> dict:
+    """AVTestEnv config whose observation has ``obs_size`` values: the current sensors, or the 240-beam, 50 m
+    lidar of drivers d1–d3, so older drivers can still be evaluated and watched."""
+    if obs_size == OBS_DIM:
+        return {}
+    if obs_size == obs_dim(LEGACY_LIDAR["num_lasers"]):
+        lidar = dict(BASE_CONFIG["vehicle_config"]["lidar"], **LEGACY_LIDAR)
+        return {"vehicle_config": dict(BASE_CONFIG["vehicle_config"], lidar=lidar)}
+    raise ValueError(f"no sensor setup gives {obs_size} observation values")
 
 
 def outcome_from(info: dict, stuck: bool) -> str | None:
@@ -367,9 +389,9 @@ class TrainingEnv(gym.Env):
     def __init__(self, tier: str, seed: int):
         super().__init__()
         self.tier, self.rng, self.difficulty = tier, np.random.default_rng(seed), 1.0
-        from .tactical import TacticalController
+        from .tactical import SUT_CONTROLLER, TacticalController
         self.env = AVTestEnv()
-        self.controller = TacticalController()
+        self.controller = TacticalController(**SUT_CONTROLLER)        # train with the controller it will drive with
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space          # same Box(-1, 1, (2,)); meaning: lane command, throttle
         self.last_outcome = None

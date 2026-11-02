@@ -21,24 +21,28 @@ from metadrive.component.vehicle.PID_controller import PIDController
 from metadrive.policy.idm_policy import FrontBackObjects
 from metadrive.utils.math import wrap_to_pi
 
-from .drivers import CautiousIDMPolicy
+from .drivers import CautiousIDMPolicy, CautiousRoadIDMPolicy
 
 LEFT, KEEP, RIGHT = 1.0, 0.0, -1.0
 THRESHOLD = 0.5
 # The controller of the system under test: part of its identity, so qualification records it in
-# QUALIFIED.json and the search runs refuse to start if it has changed since. Training keeps the
-# defaults (THRESHOLD, no commitment).
-SUT_CONTROLLER = {"threshold": THRESHOLD, "commit": False}
+# QUALIFIED.json and the search runs refuse to start if it has changed since. The 60 km/h generation
+# (d4 on) trains and drives with it; drivers d1–d3 (20 km/h, 320 inputs) used LEGACY_CONTROLLER.
+# lat_cap: at 60 km/h the uncapped lane-change steering left the road (LOG.md, 2026-11-02).
+SUT_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": 1.0}
+LEGACY_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": None}
 
 
 class TacticalController:
     """``threshold``: lane-command magnitude that starts a change. ``commit``: once a change starts, keep
     steering for that lane until the ego is in it, so a command that falls back inside the threshold
     mid-change no longer steers it back; only a command the other way cancels the change (LOG.md,
-    2026-11-02: the imitated command hovers near the threshold and flickers)."""
+    2026-11-02: the imitated command hovers near the threshold and flickers). ``lat_cap``: the lateral
+    error the steering sees is capped at this many metres, so a lane change drifts over instead of turning
+    hard toward the new lane's centre (at 60 km/h the uncapped turn overshot onto the centre line)."""
 
-    def __init__(self, threshold: float = THRESHOLD, commit: bool = False):
-        self.threshold, self.commit = threshold, commit
+    def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None):
+        self.threshold, self.commit, self.lat_cap = threshold, commit, lat_cap
         self.reset()
 
     def reset(self):
@@ -75,6 +79,8 @@ class TacticalController:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
         lane = self.target_lane(vehicle, action[0])
         long, lat = lane.local_coordinates(vehicle.position)
+        if self.lat_cap is not None:
+            lat = float(np.clip(lat, -self.lat_cap, self.lat_cap))
         heading_error = -wrap_to_pi(lane.heading_theta_at(long + 1) - vehicle.heading_theta)
         steering = self.heading_pid.get_result(heading_error) + self.lateral_pid.get_result(-lat)
         return np.array([np.clip(steering, -1.0, 1.0), action[1]])
@@ -131,7 +137,19 @@ class ScenePassingTeacher(LabelledCautiousIDM):
         return super().lane_change_policy(all_objects)
 
 
-TEACHERS = {"cautious_idm": LabelledCautiousIDM, "scene_passing": ScenePassingTeacher}
+class ScenePassingTeacher60(ScenePassingTeacher, CautiousRoadIDMPolicy):
+    """The scene-passing teacher at 60 km/h: curve slowing, 80 m look-ahead and SI gaps from
+    avtest.drivers.RoadIDMPolicy (decision 2026-11-02: the driver must cruise at least 60 km/h)."""
+
+    # the 20 km/h cautious values come first in the method resolution order, so the 60 km/h ones are restated
+    NORMAL_SPEED = CautiousRoadIDMPolicy.NORMAL_SPEED
+    DISTANCE_WANTED = CautiousRoadIDMPolicy.DISTANCE_WANTED
+    TIME_WANTED = CautiousRoadIDMPolicy.TIME_WANTED
+    MAX_LONG_DIST = CautiousRoadIDMPolicy.MAX_LONG_DIST
+
+
+TEACHERS = {"cautious_idm": LabelledCautiousIDM, "scene_passing": ScenePassingTeacher,
+            "scene_passing_60": ScenePassingTeacher60}
 
 
 class TeacherDriver:
@@ -142,7 +160,8 @@ class TeacherDriver:
 
     def start(self, env):
         self.policy = self.policy_class(env.agent, env.scenario.map_seed)
-        self.controller = TacticalController()
+        self.controller = TacticalController(**(SUT_CONTROLLER if self.policy_class is ScenePassingTeacher60
+                                                 else LEGACY_CONTROLLER))
 
     def act(self, env, obs):
         _, acceleration = self.policy.act(env.agent.id)

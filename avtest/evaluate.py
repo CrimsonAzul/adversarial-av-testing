@@ -27,10 +27,10 @@ _worker: dict = {}
 def _init(sut_path: str | None):
     import torch  # noqa: F401  (before MetaDrive)
     torch.set_num_threads(1)
-    from .sim import AVTestEnv
+    from .sim import AVTestEnv, sensor_config
     from .drivers import SUTDriver, references
-    _worker["env"] = AVTestEnv()
     _worker["sut"] = SUTDriver(Path(sut_path)) if sut_path else None
+    _worker["env"] = AVTestEnv(sensor_config(_worker["sut"].obs_size) if _worker["sut"] else None)
     _worker["references"] = references()
 
 
