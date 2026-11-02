@@ -29,6 +29,7 @@ class SUTDriver:
 
     def act(self, env, obs):
         tactical, _ = self.model.predict(obs, deterministic=True)
+        self.last_decision = tactical                  # (lane command, throttle), shown by scripts.watch_driver
         return self.controller.low_level(env.agent, tactical)
 
 

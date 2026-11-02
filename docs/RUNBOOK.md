@@ -79,6 +79,10 @@ It runs seed 101 for rl, cmaes, bo and random, then seed 202, then 303, skipping
 ## Useful extras
 
 ```powershell
+# watch the AI drive in MetaDrive's 3D view: 20 random T1 scenes with a running tally (--speed 2 = twice as fast)
+.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d3\model_best_bc.zip --tier T1
+# the same scenes with a reference driver, to compare
+.\.venv\Scripts\python.exe -m scripts.watch_driver --driver idm --tier T1
 # watch a scenario (GIF in runs\inspect); --driver sut uses models\sut.zip
 .\.venv\Scripts\python.exe -m scripts.inspect_scenario --event cut_in --driver idm --seed 120005
 # how often the reference drivers solve random scenes, per tier
