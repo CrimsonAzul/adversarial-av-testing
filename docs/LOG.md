@@ -333,3 +333,41 @@ Decision (author): qualify `runs/driver/d2/model_best.zip`, the 2.3M PPO checkpo
 **Next:**
 - Continue training and re-test on a new panel. If T1 still fails on 2026-11-14, narrow its ranges in a logged decision.
 - PPO in its current configuration degrades the driver (see the earlier 2026-11-02 entry), so the next training step must address both the curve and obstacle weakness and that degradation.
+
+## 2026-11-02 — diagnosis of the attempt-1 T1 failures: the driver gets out of the obstacle's lane too late
+
+Data: the attempt-1 T1 panel, which is development data after the failed attempt. Tools: step-by-step traces of two failures, and `scripts/diagnose_obstacles.py` (added) on all 77 T1 scenes where the obstacle stands in the ego's lane. The diagnosis run, `--model runs\driver\d2\model_best.zip --attempt 1 --tier T1`, took 229 s with 3 workers; its output is in `runs/diagnose/attempt1_T1_obstacles.jsonl`.
+
+**Traces**
+
+- **Row 102** (CCC, 2 lanes, obstacle 81 m ahead in the ego's lane): the SUT approaches at about 20 km/h. Its lane command stays between −0.3 and +0.1 until 13 m before the stopped vehicle and passes −0.5 only at 12.8 m. It hits the warning triangle, which stands 8 m before the vehicle, while only 0.65 m out of its lane (`crash_object`). IDM starts moving over about 36 m before the vehicle and passes.
+- **Row 0** (CSS, 3 lanes): the command passes −0.5 at 13 m, then drops back inside ±0.5 twice during the lane change, which steers the car back toward the obstacle's lane. It hits the triangle.
+
+**All 77 scenes**: distance to the stopped vehicle where each driver finally leaves the obstacle's lane, i.e. its centre moves more than 1 m from that lane's centre line:
+
+| Driver | Straight (43): median | 10th pct | Curve (34): median | 10th pct | Success |
+|---|---|---|---|---|---|
+| SUT (d2, 2.3M) | 16.9 m | 12.9 m | **11.6 m** | 10.2 m | 64/77 |
+| IDM | 32.6 m | 27.6 m | 32.9 m | 29.9 m | 75/77 |
+| Cautious IDM (the imitation teacher) | 34.3 m | 30.6 m | 34.3 m | 32.1 m | 68/77 |
+
+- **Every SUT failure is a late exit.** All 13 failed SUT runs left the lane only 9.9–13.6 m before the vehicle, so just 2–6 m before the triangle. 10 hit the triangle and 3 the vehicle.
+- **Curves make it worse.** On curves the SUT leaves about 5 m later than on straights, which is the margin between scraping past and hitting the triangle. This explains why the failures concentrate on curved maps.
+- **The command flickers.** In 75 of 77 scenes it drops back inside ±0.5 at least once while the car is still in the obstacle's lane and already more than 0.3 m off its centre. This happens in successful runs too, so it is general indecision, not something specific to failures.
+- **The teacher is not the cause.** Cautious IDM leaves at a median of 34 m on straights and curves alike; its failures here are "stuck", not collisions.
+
+**Cause (inferred).**
+
+- Imitation fits the lane command with a weighted mean-squared error against labels of −1, 0 and +1 (`pretrain_bc.fit`), and the controller acts only when the command passes ±0.5.
+- In similar states the teacher's labels differ. Its overtaking starts only when its speed has dropped more than 3 km/h below its 20 km/h target and an internal timer has passed 50 steps (MetaDrive `IDMPolicy.lane_change_policy`); the student cannot observe either. In the middle lane of a 3-lane road it may also go left or right.
+- A least-squares fit predicts the average of such labels. That average stays inside ±0.5 until the obstacle is close and then hovers near the threshold, which gives both the late start and the flicker.
+- Why curves make the start later is not established. A plausible reason: on a curve an obstacle in the ego's lane appears off to the side in the ego-centred lidar and vehicle list.
+
+**Run-to-run variation.** Success counts on these 77 scenes differed between three runs: SUT 64–67, cautious IDM 68–76. The exit distances agreed within 0.5 m. Outcomes depend slightly on which worker process runs a scene and what it ran before; qualification's immediate replays reproduced 20 of 22 SUT failures. This is an open issue for the reproducibility checks in the search runs.
+
+**Fix: not yet decided.** Two candidates:
+
+1. **Change the controller only:** commit to a started lane change and use a lower decision threshold. This needs no retraining and is tested on this development panel.
+2. **Retrain imitation with a categorical lane decision:** left, keep or right as a classification, so labels are not averaged.
+
+Either way, re-qualify on a new panel (`--attempt 2`).
