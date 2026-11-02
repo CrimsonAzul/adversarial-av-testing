@@ -496,3 +496,21 @@ Run d2's teacher stays available as `--teacher cautious_idm`.
 **Tests:** 39 pass. New ones cover the legacy sensors, cruising at 60 km/h within the curve limit, the 60 km/h teacher passing from about 80 m, and a 60 km/h lane change staying on the road.
 
 **Next:** the capped 60 km/h teacher and the three 60 km/h references on the T1 and T2 dev panels (running). If the teacher completes about 98% or more of the scenes some 60 km/h reference completes, train d4 overnight.
+
+## 2026-11-02 (night) — the 60 km/h teacher clears the gate on T1, but only just
+
+- **Evaluation interrupted:** the first run of the capped 60 km/h teacher and references was killed when the Claude Code session restarted (background jobs die with it). Results already appended were kept: T1 complete, T2 partial. Long jobs now run in a terminal tab.
+- **60 km/h references on the 500 T1 dev scenes** (leak fixed; mean speed includes starting from standstill, curves and following traffic):
+
+  | Driver | Raw success | Mean speed |
+  |---|---|---|
+  | `idm60` | 489/500 | 40 km/h |
+  | `idm_cautious60` | 495/500 | 39 km/h |
+  | expert | 299/500 | 30 km/h |
+
+  499 of the 500 scenes are avoidable at 60 km/h.
+- **60 km/h teacher, through its own labels with capped steering:** 490/499 avoidable scenes, **98.2%** (Wilson low 0.966). Off-road fell from 14 to 2.
+- **Passing restricted to static objects:** the teacher had passed lead cars that braked to a stop and lost 7 of 261 lead-brake scenes, against 2 for the cautious reference. It now passes only static objects, i.e. warning triangles (`ScenePassingTeacher60.STATIC_ONLY`); the 20 km/h teacher is unchanged.
+- **Result after the change:** 490/498 attempt-1-solvable scenes, **98.4%** (Wilson low 0.969). Lead-brake 255/261, obstacle 235/237. No real change: the difference is within run-to-run noise.
+- **What the remaining failures share:** all 6 lead-brake collisions happen during lane changes in traffic. At 60 km/h the drivers keep overtaking MetaDrive's background traffic, which drives at 30 km/h; both 60 km/h IDMs average about 1 lane change per scene.
+- **Consequence:** the teacher sits right at the gate, and a student usually lands a little below its teacher. A realistic background traffic speed would remove most forced overtakes. That is the next lever if d4 falls short.

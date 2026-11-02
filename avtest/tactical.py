@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 from metadrive.component.vehicle.PID_controller import PIDController
+from metadrive.component.static_object.traffic_object import TrafficObject
 from metadrive.policy.idm_policy import FrontBackObjects
 from metadrive.utils.math import wrap_to_pi
 
@@ -105,6 +106,7 @@ class ScenePassingTeacher(LabelledCautiousIDM):
     flipped at 17 km/h (LOG.md, 2026-11-02). This rule depends only on the scene."""
 
     BLOCKED_KMH = 5.0
+    STATIC_ONLY = False              # pass only static objects (warning triangles), not vehicles that have stopped
 
     def move_to_next_road(self):
         """On a new road, follow the lane that continues the current one. MetaDrive takes the first connected
@@ -124,7 +126,8 @@ class ScenePassingTeacher(LabelledCautiousIDM):
             near = FrontBackObjects.get_find_front_back_objs(all_objects, self.routing_target_lane,
                                                              self.control_object.position, self.MAX_LONG_DIST, lanes)
             blocker = near.front_object()
-            if blocker is not None and blocker.speed_km_h < self.BLOCKED_KMH:
+            static = isinstance(blocker, TrafficObject)
+            if blocker is not None and blocker.speed_km_h < self.BLOCKED_KMH and (static or not self.STATIC_ONLY):
                 index = lanes.index(self.routing_target_lane)
                 for step, exists, front, back, ahead in (
                         (-1, near.left_lane_exist(), near.front_dist[0], near.back_dist[0], near.front_objs[0]),
@@ -146,6 +149,9 @@ class ScenePassingTeacher60(ScenePassingTeacher, CautiousRoadIDMPolicy):
     DISTANCE_WANTED = CautiousRoadIDMPolicy.DISTANCE_WANTED
     TIME_WANTED = CautiousRoadIDMPolicy.TIME_WANTED
     MAX_LONG_DIST = CautiousRoadIDMPolicy.MAX_LONG_DIST
+    # passing a lead car that braked to a stop cost 5 of 261 lead-brake scenes at 60 km/h against the cautious
+    # reference, which waits behind it; the obstacle event always shows a warning triangle (LOG.md, 2026-11-02)
+    STATIC_ONLY = True
 
 
 TEACHERS = {"cautious_idm": LabelledCautiousIDM, "scene_passing": ScenePassingTeacher,
