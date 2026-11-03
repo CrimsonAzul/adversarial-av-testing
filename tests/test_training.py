@@ -121,3 +121,16 @@ def test_tactical_model_classifies_the_lane_decision(tmp_path):
     assert np.allclose(again.predict(obs[5])[0], model.predict(obs[5])[0])
     driver = SUTDriver(path)
     assert driver.obs_size == 12 and driver.controller_settings == SMOOTH_CONTROLLER
+
+
+def test_copy_with_controller_changes_only_the_controller(tmp_path):
+    from avtest.policy import TacticalModel, load_policy
+    from avtest.tactical import SMOOTH_CONTROLLER, controller_for_model, copy_with_controller, stamp_controller
+    model = TacticalModel(6, (8,))
+    model.save(tmp_path / "a.zip")
+    stamp_controller(tmp_path / "a.zip", SMOOTH_CONTROLLER)
+    copy_with_controller(tmp_path / "a.zip", tmp_path / "b.zip", {**SMOOTH_CONTROLLER, "threshold": 0.3})
+    assert controller_for_model(tmp_path / "a.zip", 6)["threshold"] == 0.5
+    assert controller_for_model(tmp_path / "b.zip", 6) == {**SMOOTH_CONTROLLER, "threshold": 0.3}
+    x = np.linspace(0, 1, 6, dtype=np.float32)
+    assert np.allclose(load_policy(tmp_path / "a.zip").predict(x)[0], load_policy(tmp_path / "b.zip").predict(x)[0])

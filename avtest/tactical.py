@@ -51,6 +51,17 @@ def stamp_controller(model_path, settings: dict) -> None:
         archive.writestr(CONTROLLER_ENTRY, json.dumps(settings, sort_keys=True))
 
 
+def copy_with_controller(source, destination, settings: dict) -> None:
+    """A copy of a model file recording other controller settings, e.g. a decision threshold tuned on a failed
+    qualification panel after training (the model itself is unchanged; the copy has its own hash)."""
+    import zipfile
+    with zipfile.ZipFile(source) as old, zipfile.ZipFile(destination, "w") as new:
+        for item in old.infolist():
+            if item.filename != CONTROLLER_ENTRY:
+                new.writestr(item, old.read(item.filename))
+    stamp_controller(destination, settings)
+
+
 def controller_for_model(model_path, obs_size: int) -> dict:
     """The controller a driver drives with: the one recorded in its file, else its generation's (d1-d3 legacy,
     d4-d6 SUT_CONTROLLER)."""

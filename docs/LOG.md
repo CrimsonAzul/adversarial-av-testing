@@ -702,3 +702,23 @@ Its lane command is P(left) − P(right), acted on above the controller's thresh
 **d8:** `pretrain_bc --name d8 --tier T1 --controller smooth`. It uses the classification head, the closing-speed teacher, 50–60 km/h traffic and throttle smoothing (`SMOOTH_CONTROLLER`), and is otherwise as d6/d7.
 
 **Checks:** pipeline check passed (the model saves, loads and records its controller; round 1 drove with the classifier as the student); 45 tests pass.
+
+## 2026-11-03 — d8, the classifier: as safe as d6, and smooth
+
+**d8** (classification head, throttle smoothing, T1): best T1 validation 79.0% at round 5, still rising (72.5% at round 4). On its training data it matches the teacher's lane class 96% of the time, with 1.4% false lane changes.
+
+**On the 499 avoidable T1 dev scenes:**
+
+| Driver, setting | Success (Wilson low) | Failures | Lane changes per scene | Steering change per step | Throttle change per step |
+|---|---|---|---|---|---|
+| d6 smoothed (previous best) | 90.6% (0.877) | 39 collisions, 8 off-road | 5.76 | 0.073 | 0.045 |
+| d8, threshold 0.5 (as trained) | 83.0% (0.794) | 80 collisions, 5 off-road | 0.84 | 0.035 | 0.041 |
+| **d8, threshold 0.3** | **90.4% (0.875)** | 45 collisions, 3 off-road | **1.42** | **0.039** | 0.042 |
+| d8, threshold 0.3 with commit | 88.8% (0.857) | 50 collisions, 5 off-road, 1 stuck | 1.97 | 0.028 | 0.044 |
+
+- **The vibration is fixed.** At threshold 0.3, d8 matches d6's success with 75% fewer lane changes (the teacher makes 1.08) and about half the steering change.
+- **As trained it is too hesitant:** at 0.5 it collides twice as often.
+- **Tuning:** the threshold was tuned on the development panel, which is allowed. `tactical.copy_with_controller` writes `runs/driver/d8/model_best_bc_t03.zip`: the same network, recording threshold 0.3 (test added).
+- **Still far from the 98% gate.** d8 was still improving at round 5, so more DAgger rounds are the cheapest next step.
+
+**Tests:** 46 pass.
