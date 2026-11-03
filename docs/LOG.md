@@ -734,3 +734,21 @@ Its lane command is P(left) − P(right), acted on above the controller's thresh
 
 - **Best is round 7,** now `model_best_bc.zip`. At the trained threshold of 0.5, rounds 7 and 9 halve round 5's collisions.
 - **Not yet done:** the dev-panel test at threshold 0.3, which lifted round 5 from 83.0% to 90.4%. The author will run it later.
+
+## 2026-11-03 — d8 round 7 on the dev panel: no gain; the remaining collisions are missing brakes
+
+**d8 round 7** (best on T1 validation, 90.5%) on the 499 avoidable T1 dev scenes:
+
+| Setting | Success (Wilson low) | Crash rate | Lead-brake | Obstacle | Lane changes per scene |
+|---|---|---|---|---|---|
+| threshold 0.5 | 88.4% (0.853) | 11.6% | 239/260 | 202/239 | 1.03 |
+| threshold 0.4 | 88.6% (0.855) | 11.4% | 234/260 | 208/239 | 1.34 |
+| threshold 0.3 | 88.6% (0.855) | 11.4% | 240/260 | 202/239 | 1.81 |
+| *round 5, threshold 0.3* | *90.4% (0.875)* | *9.6%* | *237/260* | *214/239* | *1.42* |
+
+- **Selection noise.** Round 7 is not better than round 5. Choosing the best round on 200 validation scenes (±4 points) picks partly by chance; on the 500 dev scenes the extension brought no gain.
+- **The plateau.** Five students in a row (d5–d8) landed between 88% and 91%, though each fix solved its targeted behaviour (weaving, smoothness).
+- **The collisions.** Of 20 traced collisions, 16 repeated on replay, and 16 of those happened without braking: 9 with the warning triangle (7 without braking), 4 with a braking lead car and 3 with traffic.
+  - Hard braking is rare in the teacher's data, so regressing throttle and brake as one averaged number pulls it toward zero, as happened with the lane decision.
+  - Throttle smoothing may add some lag; d6's test showed no measurable cost.
+- **Next candidate:** classify the longitudinal action as well, over a few levels (hard brake, brake, coast, accelerate).
