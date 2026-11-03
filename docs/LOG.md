@@ -908,3 +908,44 @@ The best round, 3, is `model_best_bc.zip`; it records `AEB_CONTROLLER`, so evalu
 3. **If cars still end up stopped close behind obstacles:** allow full steering, without the 1 m lateral cap, below walking pace.
 
 No code changed in this entry.
+
+## 2026-11-03 — triangle speed fixed (environment v2); a lane-change guard takes d10 to 97.2% on T1
+
+**Fix:** `EventManager.after_step` resets the event objects' reported velocities after every step: 0 for the warning triangle, the scripted speed for the event vehicle.
+- A background car clipping the triangle can no longer leave it reporting a speed. The test sets both to 10 m/s and checks they read their true speed after one step.
+- This changes the environment for every driver, so results now go to files tagged `traffic50-60-v2` and are never mixed with earlier ones.
+
+**Lane-change guard** (`TacticalController(lc_guard_m=)`, off by default):
+- **The rule:** a commanded lane change becomes "keep" while the target lane holds a stopped vehicle (under 5 km/h) or a static object within `lc_guard_m` metres ahead, unless the ego's own lane is blocked nearer.
+- **How objects are placed:** by the lane they are in, as MetaDrive's IDM places them, but along the whole route (`RoutePath`), not just one road segment. An object still counts until the ego is a car length past it.
+- **Test:** commanded at full lock towards the lane of an obstacle 52 m ahead, the car moves in and never gets past without the guard. With the guard, it stays in its lane, passes, then changes lanes.
+
+**On the 499 avoidable T1 dev scenes, environment v2:**
+
+| Driver | Success (Wilson low) | Crash rate | Failures | Lead-brake | Obstacle | Lane changes per scene |
+|---|---|---|---|---|---|---|
+| `idm60` / `idm_cautious60` / expert | 97.6% / 98.4% / 58.3% | | | | | 0.99 / 1.03 / 0 |
+| 60 km/h teacher | 98.0% (0.964) | 2.0% | 6 collisions, 4 off-road | 256/260 | 233/239 | 1.09 |
+| d10 | 94.4% (0.920) | 1.4% | 21 stuck, 4 off-road, 3 collisions | 246/260 | 225/239 | 1.32 |
+| **d10 + guard at 70 m** | **97.2% (0.953)** | **1.4%** | 7 stuck, 5 off-road, 2 collisions | 249/260 | **236/239** | 1.08 |
+
+- **The fix changed little for the reference drivers.** The same 499 scenes are avoidable, and `idm60`, `idm_cautious60` and the teacher keep their success counts. d10 alone moved from 95.2% to 94.4%: 4 scenes, about the run-to-run variation.
+- **The guard is the largest single gain since the braking layer.** It removes 18 of d10's 28 failures, including 14 of its 21 stuck. It adds 4 new ones. It stays within the 2% crash limit, and the car changes lanes as often as its teacher (1.08 against 1.09 per scene).
+- **Gate:** 485/499 against the 489 needed (98.0%, Wilson low 0.964 at 489). 4 scenes short. The 2% crash limit is met.
+
+**The guard's 4 new failures, replayed:**
+- **Row 233:** succeeds on replay, and the guard never acted (borderline).
+- **Row 318:** already failed in the old environment (late, hard braking in a curve); the guard acted for one step.
+- **Row 28:** the guard kept the car out of a lane with stopped traffic. 8 s later a background car moved into the ego's lane while alongside (side contact, as in row 90).
+- **Row 272, a second bug, in the braking layer.**
+  - The guard correctly kept the car out of the obstacle's lane. But the braking layer braked for the triangle in the *adjacent* lane, measuring a 25 m gap to it while the car was centred in its own lane (lateral offset −0.02 m).
+  - Cause: the braking layer measures lateral position against the ego's current lane only. Where a straight lane meets a curve, an object in the next lane of the curve lies on the straight lane's extension.
+  - The car stopped beside the triangle; the network then held the brake itself, and the scene ended stuck.
+
+**For viewing:** `runs/driver/d10/model_best_bc_guard.zip` is d10 recording `AEB_CONTROLLER` plus `lc_guard_m: 70`.
+
+**Next (proposal):**
+1. **Fix the braking layer's in-path test** to use the route, like the guard: lateral offset from the ego's `RoutePath` instead of its current lane. Then re-measure d10 + guard.
+2. **d11:** d10's recipe with the guard (and the fixed braking layer) in the DAgger loop. d10 gained from having the braking layer in training: obstacle stuck fell from 21 to 12.
+
+**Tests:** 51 pass.
