@@ -949,3 +949,39 @@ No code changed in this entry.
 2. **d11:** d10's recipe with the guard (and the fixed braking layer) in the DAgger loop. d10 gained from having the braking layer in training: obstacle stuck fell from 21 to 12.
 
 **Tests:** 51 pass.
+
+## 2026-11-03 — the braking layer measured along the route: d10 + guard 97.4% on T1
+
+**Correction to the previous entry:** in row 272 the phantom object was the stopped car, not the triangle. In current-lane coordinates the triangle was 3.07 m to the side, clear of the path. The car stood 8 m further on, in the outer lane of a 17 m left curve, and lay on the straight lane's extension.
+
+**Fix:** `time_to_collision` places the ego and every object along the ego's route with the index of its current lane (`RoutePath.local`: arc length and signed lateral offset against the closest lane of the path), as the guard does. Off its route, the ego falls back to its lane.
+- **Test** (`test_braking_layer_ignores_the_outer_lane_of_a_curve`): row 272's scene without traffic. The car changes into the free lane and keeps it at 25 km/h past the obstacle.
+  - With the old in-path test, an object is "in its path" on 22 steps, and the test fails.
+  - Measured along the route, nothing is, and the test passes.
+  - (At a fixed 0.4 throttle the car reaches 52 km/h and slides out of the 17 m curve into the stopped car, so the test holds 25 km/h.)
+- The braking layer is part of the SUT's controller, not of the environment. The two d10 settings measured with the old layer are moved to `…_traffic50-60-v2.aeb_lane_bug`. The reference and teacher rows stay, because neither uses the braking layer.
+
+**On the 499 avoidable T1 dev scenes, environment v2:**
+
+| Driver | Success (Wilson low) | Crash rate | Failures | Lead-brake | Obstacle | Lane changes per scene |
+|---|---|---|---|---|---|---|
+| 60 km/h teacher | 98.0% (0.964) | 2.0% | 6 collisions, 4 off-road | 256/260 | 233/239 | 1.09 |
+| d10, old braking layer | 94.4% (0.920) | 1.4% | 21 stuck, 4 off-road, 3 collisions | 246/260 | 225/239 | 1.32 |
+| d10 | 96.0% (0.939) | 1.2% | 14 stuck, 4 off-road, 2 collisions | 250/260 | 229/239 | 1.35 |
+| d10 + guard, old braking layer | 97.2% (0.953) | 1.4% | 7 stuck, 5 off-road, 2 collisions | 249/260 | 236/239 | 1.08 |
+| **d10 + guard** | **97.4% (0.956)** | **1.2%** | 7 stuck, 4 off-road, 2 collisions | 250/260 | 236/239 | 1.10 |
+
+- **The false positive cost d10 alone 8 scenes:** the fix resolves 13 failures, mostly stuck, and adds 5. Several of the stuck cases traced earlier were stops for a car in the next lane.
+- **With the guard, the fix is worth 1 scene:** it resolves 4 failures (including row 272) and adds 3. The guard had already kept the car out of most of those situations.
+- **Gate:** 486/499 against the 489 needed. 3 scenes short. Crash rate 1.2%, within the 2% limit.
+
+**The 13 remaining failures of d10 + guard:**
+- **Stuck (7):** rows 32, 34, 58, 112, 134, 176, 302. Rows 34, 134 and 302 are the lead-brake cases where the car pulled out at walking pace and ended straddling the line beside the stopped lead; 176 is the background car stopped across the line.
+- **Off-road on the yellow line (4):** rows 190, 241, 267, 400.
+- **Collisions (2):** row 90, a side contact with background traffic, and row 196, a cut back in front of the scripted lead.
+
+**Viewer:** `runs/driver/d10/model_best_bc_guard.zip` drives with the fixed layer (the layer is code; the file records its settings).
+
+**Next (proposal): d11,** d10's recipe with the guard in the DAgger loop. d10's own training with the braking layer had cut obstacle stuck from 21 to 12. With the guard in training, the student would no longer reach the blocked-lane stops at all, and would collect labels on what the guard lets it do instead.
+
+**Tests:** 52 pass.
