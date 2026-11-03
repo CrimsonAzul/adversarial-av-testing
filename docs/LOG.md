@@ -625,3 +625,26 @@ All results below are on the 500 attempt-1 T1 scenes, in 50–60 km/h traffic (`
 **d7:** d6's settings with the lane-change weight lowered from 10 to 3 (`--lane-change-weight 3`). The ±0.8 commands in straddling states come from a small number of lane-change samples weighted 10×.
 
 **Tests:** 43 pass. New ones cover the `hold_lane` logic and the controller recorded in the model file.
+
+## 2026-11-03 (morning) — d7, and where imitation at 60 km/h stands
+
+**d7** (d6 with lane-change weight 3): best T1 validation 88.0% at round 4.
+
+| On the 499 avoidable T1 dev scenes | d6 (weight 10) | d7 (weight 3) | 60 km/h teacher |
+|---|---|---|---|
+| Success | **91.6%** (Wilson low 0.888) | 90.2% (0.873) | 98.0% (0.964) |
+| Failures | 36 collisions, 6 off-road | 36 collisions, 13 stuck | 6 collisions, 2 off-road, 2 stuck |
+| Lead-brake / obstacle | 244/260, 213/239 | 229/260, 221/239 | 257/260, 232/239 |
+| Lane changes per scene | 5.75 | **1.73** | 1.08 |
+
+- **The lower weight removed most of the weaving and helped on obstacles, but the student became hesitant:**
+  - in 13 lead-brake scenes it stays behind a stopped lead car until it counts as stuck;
+  - 9 of 14 traced collisions are with the warning triangle, at 30–45 km/h, without braking and with a late lane change.
+- **d6 was too eager and d7 too hesitant.** Both learn a yes/no lane decision as a least-squares fit to −1/0/+1 that only acts above ±0.5; the weight only moves where the averaged value lands.
+
+**Where it stands.**
+
+- No 60 km/h student has passed 92% on T1, against its teacher's 98%. At 20 km/h, d3 reached 97.4% after two rounds.
+- Not the cause, each measured: network size (capacity test), traffic speed (d5), the training tier (d5–d7 on T1), overtaking labels that depend on the student's own speed (fixed in the teacher), and the lane-change weight (d6 vs d7).
+- **Next proposal:** learn the lane decision as a classification (left/keep/right, cross-entropy, act on the most likely class), with throttle and brake regressed as now. This replaces the policy's lane output, so it needs its own network, about 2–3 h of work plus training.
+- No qualification attempt was spent: every driver tonight was clearly below the gate on the development scenes.
