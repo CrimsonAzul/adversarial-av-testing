@@ -815,3 +815,52 @@ The author paused d9 at 13:25 and resumed it at 13:45. It was stopped after roun
 - **Next: d10**, trained with the layer in the DAgger loop. The student then reaches those stops and is labelled by the teacher, which passes a stopped or static object when the adjacent lane is clear.
 
 **Tests:** 49 pass.
+
+## 2026-11-03 — d10, braking in the training loop: 95.2% on T1; every driver so far, worst to best
+
+**d10** (`pretrain_bc --name d10 --tier T1 --controller aeb`): d9's network and teacher (lane classifier, 9-bin throttle, `scene_passing_60`), now collecting and validating with the braking layer (`AEB_CONTROLLER`: threshold 0.3, smoothing 0.5, emergency braking at 2.5 s). 6 rounds × 600 episodes, 1 h 35 min.
+
+| d10 round | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| T1 val (200 scenes) | 68.5% | 83.5% | 87.0% | **94.0%** | 92.5% | 93.5% |
+
+The best round, 3, is `model_best_bc.zip`; it records `AEB_CONTROLLER`, so evaluations and the viewer use it.
+
+**On the 499 avoidable T1 dev scenes:**
+
+| | Success (Wilson low) | Crash rate | Failures | Lead-brake | Obstacle | Lane changes per scene |
+|---|---|---|---|---|---|---|
+| d9 + 2.5 s (braking added after training) | 94.4% (0.920) | 1.4% | 21 stuck, 5 collisions, 2 off-road | 256/260 | 215/239 | 1.86 |
+| **d10 (trained with it)** | **95.2% (0.929)** | 1.4% | 17 stuck, 3 collisions, 4 off-road | 250/260 | **225/239** | **1.30** |
+| 60 km/h teacher | 98.0% (0.964) | 1.6% | 6 collisions, 2 off-road, 2 stuck | 257/260 | 232/239 | 1.08 |
+
+- **Training with the layer helped where it was meant to:** obstacle scenes rose from 215 to 225 of 239; stuck behind a static obstacle fell from 21 to 12.
+- **Overall, the gain is small:** 4 scenes, about the run-to-run variation (d6 scored 91.6% and 90.4% on two runs of the same panel). Lead-brake fell from 256 to 250: 5 newly stuck behind a stopped lead car, 3 off-road. The two drivers mostly fail on different scenes: 7 failures in common, 17 only for d10, 21 only for d9 + braking.
+- **Smoother:** 1.30 lane changes per scene against 1.86, steering change per step 0.036 against 0.041.
+- **Still short of the gate.** On 499 scenes the gate allows at most 10 failures (489/499 = 98.0%, Wilson low 0.964); d10 has 24, its teacher 10. No qualification attempt.
+
+**d4 re-measured with the corrected script.** Its only 500-scene result (87.0%) came from the uncapped-steering bug. Correct: 444/499, **89.0%** (Wilson low 0.859), 54 collisions, 1 off-road, 2.24 lane changes per scene. It was trained in 30 km/h traffic and is measured in today's 50–60 km/h traffic, like every 60 km/h row below.
+
+**Viewer:** `watch_driver --traffic30` shows a driver in MetaDrive's 30 km/h traffic, the environment d2 and d3 were measured in (`sim.ROAD_TRAFFIC = False`).
+- Checked headless: the engine gets `PGTrafficManager` with the flag and `RoadTrafficManager` without it. d2 drives at 20–22 km/h and reproduces its qualification outcome on scene 0 (a collision).
+- The viewer's help and RUNBOOK pointed at `d3/model_best_bc.zip`, which does not exist (d3's best round is `checkpoints/bc_round_02.zip`); fixed.
+
+**Every driver so far, worst to best.** T1 dev panel. The 20 km/h rows count the 498 scenes avoidable at 20 km/h, in 30 km/h traffic; the 60 km/h rows the 499 avoidable at 60 km/h, in 50–60 km/h traffic.
+
+| Driver | Viewer model (`runs/driver/…`) | Success (Wilson low) | Crash rate | Lane changes | Steering change/step | What changed from the row above |
+|---|---|---|---|---|---|---|
+| d2, 20 km/h | `d2/model_best.zip` (`--traffic30`) | 95.6% (0.934) | 4.2% | 0.69 | – | First driver: imitation of a cautious IDM through the tactical interface, then 2.3M steps of PPO |
+| d3, 20 km/h | `d3/checkpoints/bc_round_02.zip` (`--traffic30`) | 97.4% (0.956) | 2.6% | – | – | Scene-based teacher: leaves the obstacle's lane earlier (obstacle scenes 219 → 227 of 237); imitation only |
+| d4, 60 km/h | `d4/model_best_bc.zip` | 89.0% (0.859) | 11.0% | 2.24 | 0.039 | 60 km/h: teacher slowing for curves, 720-beam 100 m lidar plus road-edge and lane-line beams (800 inputs), 1 m lateral cap |
+| d6 | `d6/model_best_bc.zip` | 91.6% (0.888); repeat 90.4% | 8.4% | 5.75 | 0.073 | 50–60 km/h traffic, trained on T1, a teacher that passes only cars it closes in on: fewer crashes, but it weaves and vibrates |
+| d8 | `d8/model_best_bc_t03.zip` (round 5, threshold 0.3) | 90.4% (0.875) | 9.6% | 1.42 | 0.039 | Lane decision as a classification, throttle smoothing: same success as d6, 4× fewer lane changes, half the steering jitter |
+| d9 + braking | `d9/model_best_bc_aeb.zip` | 94.4% (0.920) | 1.4% | 1.86 | 0.041 | 9-bin throttle (it learns hard brakes) plus the emergency-braking layer: crashes from 9.6% to 1.4% |
+| **d10** | `d10/model_best_bc.zip` | **95.2% (0.929)** | **1.4%** | 1.30 | 0.036 | Trained with the braking layer in the loop: pulls out after emergency stops more often |
+
+- **d6 and d8 tie on success** (d6's own two runs differ by 1.2 points). d8 ranks above d6 because it drives the same scenes without the weaving. d4 ranks below d6 on crash rate (11.0% against 8.4%), though it weaves less.
+- **The binned throttle needed the layer to pay off:** d9 alone 89.0%, d8 + 2.5 s 89.6%, d9 + 2.5 s 94.4%.
+- **Not in the list:** d5 (89.0%, 10.6 lane changes per scene, from the teacher's "pass anything under 40 km/h" rule), d7 (90.2%, hesitant: 13 stuck), d9 alone (89.0%).
+
+**Next:** trace d10's 24 remaining failures (17 stuck, 4 off-road, 3 collisions) before choosing the next change.
+
+**Tests:** 49 pass (no test changed; the viewer flag was checked headless, as above).

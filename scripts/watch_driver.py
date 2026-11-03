@@ -1,7 +1,8 @@
 """Watch a driver in MetaDrive's 3D view: random scenes of a tier, one after another, with a running tally.
 
-    .venv\\Scripts\\python.exe -m scripts.watch_driver --model runs\\driver\\d3\\model_best_bc.zip --tier T1
-    .venv\\Scripts\\python.exe -m scripts.watch_driver --driver idm --tier T3        # a reference driver, to compare
+    .venv\\Scripts\\python.exe -m scripts.watch_driver --model runs\\driver\\d10\\model_best_bc.zip --tier T1
+    .venv\\Scripts\\python.exe -m scripts.watch_driver --model runs\\driver\\d3\\checkpoints\\bc_round_02.zip --tier T1 --traffic30
+    .venv\\Scripts\\python.exe -m scripts.watch_driver --driver idm60 --tier T1      # a reference driver, to compare
 
 Opens a window with a chase camera behind the ego car. Scenes are drawn the way random testing draws
 them (uniform θ for the tier, random map seeds), so this is the distribution qualification tests, not
@@ -41,11 +42,16 @@ def main() -> None:
     p.add_argument("--scenes", type=int, default=20)
     p.add_argument("--seed", type=int, default=0, help="which random scenes; the same seed shows the same scenes")
     p.add_argument("--speed", type=float, default=1.0)
+    p.add_argument("--traffic30", action="store_true",
+                   help="MetaDrive's own 30 km/h background traffic, the environment the 20 km/h drivers (d2, d3) "
+                        "were measured in, instead of today's 50-60 km/h traffic (avtest.sim.ROAD_TRAFFIC)")
     args = p.parse_args()
     if args.driver == "sut" and not args.model.exists():
-        raise SystemExit(f"{args.model} not found; pass --model, e.g. runs\\driver\\d3\\model_best_bc.zip")
-    from avtest import drivers
+        raise SystemExit(f"{args.model} not found; pass --model, e.g. runs\\driver\\d10\\model_best_bc.zip")
+    from avtest import drivers, sim
     from avtest.sim import DT, AVTestEnv, sensor_config
+    if args.traffic30:
+        sim.ROAD_TRAFFIC = False                       # read when the env sets up its engine
     driver = {"sut": lambda: drivers.SUTDriver(args.model), "idm": drivers.IDMDriver,
               "idm_cautious": drivers.CautiousIDMDriver, "expert": drivers.ExpertDriver,
               "idm60": drivers.RoadIDMDriver, "idm_cautious60": drivers.CautiousRoadIDMDriver}[args.driver]()
