@@ -439,3 +439,31 @@ def test_lane_change_guard_keeps_out_of_the_obstacle_lane(env):
         seen[name] = (entered_before, passed, env.agent.lane_index[2])
     assert seen["without"][0] and not seen["without"][1]           # moved in ahead of it and never got past
     assert seen["with"] == (False, True, start - 1)                # kept out until past, then changed left
+
+
+def test_braking_layer_ignores_the_outer_lane_of_a_curve(env):
+    """Attempt-1 T1 scene 272 without traffic: a stopped car stands in the right lane of a left curve. Driving in the
+    left lane towards it, the braking layer measured along the current (straight) lane found the car on that lane's
+    extension and braked the ego to a stop beside it, 22 steps with an object 'in its path' on this drive. Measured
+    along the route it sees nothing (LOG.md, 2026-11-03)."""
+    from avtest import seeds
+    from avtest.tactical import KEEP, LEFT, SUT_CONTROLLER, TacticalController
+    theta = [0.2378, 0.6087, 0.7142, 0.0889, 0.1767, 0.0, 0.8178, 0.0478, 0.4937, 0.4336, 0.2474, 0.1836]
+    env.load(sc.decode(np.asarray(theta), seeds.check(115238, "qual"), "T1"))
+    env.reset()
+    em = env.engine.managers["event_manager"]
+    assert env.agent.lane_index[2] == 1 and em.path.lanes[0].index[-1] == 1       # obstacle ahead in the ego's lane
+    controller = TacticalController(**SUT_CONTROLLER)
+    in_path, passed = [], False
+    for k in range(600):                            # at 25 km/h, which the 17 m curve allows (faster, it slides out)
+        throttle = 0.5 if env.agent.speed_km_h < 25 else 0.0
+        _, _, term, trunc, info = env.step(controller.low_level(env.agent, [LEFT if k < 40 else KEEP, throttle]))
+        if k >= 40 and env.agent.lane_index[2] == 0:
+            in_path.append(TacticalController.time_to_collision(env.agent)[1])
+        if em.s - em.ego_path.project(env.agent.position) < -10:
+            passed = True
+            break
+        if term or trunc:
+            break
+    assert passed and len(in_path) > 50
+    assert all(gap == float("inf") for gap in in_path)

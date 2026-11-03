@@ -128,12 +128,17 @@ class RoutePath:
 
     def project(self, position) -> float:
         """Arc length of the closest point (searches every lane; routes are short)."""
-        best, best_s = math.inf, 0.0
+        return self.local(position)[0]
+
+    def local(self, position) -> tuple[float, float]:
+        """(arc length, signed lateral offset) of a position against the closest lane of the path; (0, inf) if no
+        lane of the path is beside it."""
+        best, best_s, best_lat = math.inf, 0.0, math.inf
         for start, lane in zip(self.starts, self.lanes):
             long, lat = lane.local_coordinates(position)
             if -2.0 <= long <= lane.length + 2.0 and abs(lat) < best:
-                best, best_s = abs(lat), start + min(max(long, 0.0), lane.length)
-        return best_s
+                best, best_s, best_lat = abs(lat), start + min(max(long, 0.0), lane.length), lat
+        return best_s, best_lat
 
 
 class EventManager(BaseManager):

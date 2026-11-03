@@ -176,17 +176,23 @@ class TacticalController:
     @staticmethod
     def time_to_collision(vehicle, lookahead_m: float = 40.0, margin_m: float = 0.3) -> tuple[float, float]:
         """(seconds until the ego reaches the nearest detected object overlapping its path at the current
-        closing speed, bumper gap to the nearest such object), inf if none. Positions are taken along the
-        ego's current lane, so on a curve an object in the lane ahead counts and one in the next lane does not."""
+        closing speed, bumper gap to the nearest such object), inf if none. Positions are taken along the ego's
+        route with the index of its current lane (sim.RoutePath), so on a curve an object in the lane ahead counts
+        and one in the next lane does not, also across road segments. Taken along the current lane alone, a stopped
+        car in the outer lane of a curve lay on the straight lane's extension, and the car braked to a stop beside
+        it (LOG.md, 2026-11-03). Off its route, the ego measures along its lane."""
+        from .sim import RoutePath
         speed = vehicle.speed_km_h / 3.6
         lane = vehicle.lane
-        ego_long, ego_lat = lane.local_coordinates(vehicle.position)
+        path = RoutePath(vehicle.engine.current_map.road_network, vehicle.navigation.checkpoints, lane.index[-1])
+        where = path.local if np.isfinite(path.local(vehicle.position)[1]) else lane.local_coordinates
+        ego_long, ego_lat = where(vehicle.position)
         heading = np.array([np.cos(vehicle.heading_theta), np.sin(vehicle.heading_theta)])
         best, nearest = float("inf"), float("inf")
         for obj in vehicle.lidar.get_surrounding_objects(vehicle):
             if obj is vehicle or not hasattr(obj, "position"):
                 continue
-            long, lat = lane.local_coordinates(obj.position)
+            long, lat = where(obj.position)
             gap = long - ego_long - (vehicle.LENGTH + getattr(obj, "LENGTH", 1.0)) / 2
             if not 0.0 < gap < lookahead_m:
                 continue
