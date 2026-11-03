@@ -21,9 +21,9 @@ class SUTDriver:
     name = "sut"
 
     def __init__(self, model_path: Path):
-        from stable_baselines3 import PPO
+        from .policy import load_policy
         from .tactical import TacticalController, controller_for_model
-        self.model = PPO.load(str(model_path), device="cpu")
+        self.model = load_policy(model_path)                 # TacticalModel (d8 on) or PPO (d1-d7)
         # each driver drives with the controller it was trained with (recorded in the file from d7 on)
         self.controller_settings = controller_for_model(model_path, self.obs_size)
         self.controller = TacticalController(**self.controller_settings)

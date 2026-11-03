@@ -93,3 +93,31 @@ def test_model_file_records_its_controller(tmp_path):
     import pytest
     with pytest.raises(ValueError):
         stamp_controller(path, HOLD_CONTROLLER)                          # recorded once, never overwritten
+
+
+def test_tactical_model_classifies_the_lane_decision(tmp_path):
+    """d8's student: a 3-way lane class plus throttle, saved and loaded like the PPO models it replaces."""
+    from avtest.drivers import SUTDriver
+    from avtest.policy import TacticalModel, fit_classify, is_tactical_model, lane_classes, load_policy
+    from avtest.tactical import SMOOTH_CONTROLLER, stamp_controller
+    assert lane_classes(np.array([1.0, 0.0, -1.0, 0.3])).tolist() == [0, 1, 2, 1]
+    rng = np.random.default_rng(0)
+    obs = rng.random((3000, 12)).astype(np.float32)
+    lane = np.where(obs[:, 0] > 0.8, 1.0, np.where(obs[:, 0] < 0.2, -1.0, 0.0))     # a learnable rule
+    act = np.stack([lane, 2 * obs[:, 1] - 1], 1).astype(np.float32)
+    model = TacticalModel(12, (32, 32))
+    stats = fit_classify(model, obs, act, epochs=150, seed=0)
+    assert stats["lane_command_agreement"] > 0.95 and stats["lane_change_recall"] > 0.9
+    action, _ = model.predict(obs[0])
+    assert -1 <= action[0] <= 1 and -1 <= action[1] <= 1                  # P(left) - P(right), throttle
+    decided = np.array([model.predict(o)[0][0] for o in obs[:300]])
+    assert np.mean((np.abs(decided) > 0.5) == (lane[:300] != 0)) > 0.9  # above the threshold where the rule says
+    path = tmp_path / "student.zip"
+    model.save(path)
+    stamp_controller(path, SMOOTH_CONTROLLER)
+    assert is_tactical_model(path)
+    again = load_policy(path)
+    assert again.observation_space.shape == (12,)
+    assert np.allclose(again.predict(obs[5])[0], model.predict(obs[5])[0])
+    driver = SUTDriver(path)
+    assert driver.obs_size == 12 and driver.controller_settings == SMOOTH_CONTROLLER

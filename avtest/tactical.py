@@ -36,6 +36,8 @@ LEGACY_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": None}
 # travels with every copy (models/sut.zip) and is covered by the model hash. HOLD_CONTROLLER (hold_lane) was tried
 # and made the teacher worse; it remains an option (pretrain_bc --controller hold).
 HOLD_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": 1.0, "hold_lane": True}
+# SUT_CONTROLLER with throttle smoothing: 42% less throttle change per step at d6's success (LOG.md, 2026-11-03)
+SMOOTH_CONTROLLER = {**SUT_CONTROLLER, "smooth": 0.5}
 CONTROLLER_ENTRY = "avtest_controller.json"
 
 

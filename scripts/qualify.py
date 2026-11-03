@@ -58,9 +58,9 @@ def main() -> None:
     args = p.parse_args()
     from avtest.evaluate import Evaluator
 
-    from stable_baselines3 import PPO
     from avtest.sim import OBS_DIM
-    obs_size = int(PPO.load(args.model, device="cpu").observation_space.shape[0])
+    from avtest.policy import load_policy
+    obs_size = int(load_policy(args.model).observation_space.shape[0])
     if obs_size != OBS_DIM:
         raise SystemExit("this driver uses the d1–d3 sensors; qualification is for today's sensors")
     controller = controller_for_model(args.model, obs_size)

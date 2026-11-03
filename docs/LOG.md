@@ -678,3 +678,27 @@ The vibration is mainly side-to-side wobble: the lane command crossing ±0.5 mak
 - **Conclusion:** the wobble needs the classification-based lane decision; smoothing cannot remove it safely.
 
 **Tests:** 44 pass.
+
+## 2026-11-03 — the lane decision as a classification (d8)
+
+**New student** (`avtest/policy.py`, `TacticalModel`), the default of `pretrain_bc --head classify`:
+
+- a shared 256 × 256 Tanh trunk;
+- a 3-way lane head (left/keep/right) trained with cross-entropy;
+- a throttle/brake head trained with mean-squared error.
+
+Its lane command is P(left) − P(right), acted on above the controller's threshold of 0.5, so a change needs one side to be the clear majority. The threshold can be tuned after training without retraining. The tactical action has the same form as before, so the controller, the evaluator and qualification are unchanged. `load_policy` reads either kind of model file. PPO refuses a `TacticalModel` warm start. The lane-change weight does not apply to this head.
+
+**Offline check on d6's data** (rounds 0–4 for training, round 5 for testing, same network size and epochs):
+
+| | Lane agreement | Recall of teacher lane-change steps | False lane changes per step | Throttle error |
+|---|---|---|---|---|
+| Weighted mean (d6's method) | 82.4% | 74.0% | 14.9% | 0.383 |
+| Classification | **91.2%** | 39.6% | **2.5%** | lower (combined action error 0.199) |
+
+- **Fewer false changes:** six times fewer, which is the wobble.
+- **Risk:** it commits to a change only when confident, so it may start late.
+
+**d8:** `pretrain_bc --name d8 --tier T1 --controller smooth`. It uses the classification head, the closing-speed teacher, 50–60 km/h traffic and throttle smoothing (`SMOOTH_CONTROLLER`), and is otherwise as d6/d7.
+
+**Checks:** pipeline check passed (the model saves, loads and records its controller; round 1 drove with the classifier as the student); 45 tests pass.

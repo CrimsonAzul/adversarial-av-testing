@@ -62,7 +62,8 @@ def _collect(task: dict) -> dict:
     from avtest.sim import OBS_DIM, AVTestEnv
     rng = np.random.default_rng(task["seed"])
     env = AVTestEnv()
-    student = PPO.load(task["model"], device="cpu") if task["model"] else None
+    from avtest.policy import load_policy
+    student = load_policy(task["model"]) if task["model"] else None
     obs_list, act_list, outcomes = [], [], []
     try:
         for _ in range(task["episodes"]):
@@ -147,7 +148,10 @@ def main() -> None:
     p.add_argument("--check", action="store_true")
     p.add_argument("--pilot", action="store_true", help="3 rounds x 240 episodes, 100-scene validation")
     p.add_argument("--teacher", default="scene_passing_60", choices=("scene_passing_60", "scene_passing", "cautious_idm"))
-    p.add_argument("--controller", default="level", choices=("level", "hold"),
+    p.add_argument("--head", default="classify", choices=("classify", "mean"),
+                   help="classify: avtest.policy.TacticalModel, lane decision as a 3-way class (d8 on); "
+                        "mean: the PPO actor's mean regressed onto the labels (d2-d7)")
+    p.add_argument("--controller", default="level", choices=("level", "smooth", "hold"),
                    help="60 km/h teacher only: lane-relative commands (d4 on) or the hold_lane controller, which "
                         "made the teacher itself worse (96.4% vs 98.0% on T1; LOG.md, 2026-11-03)")
     p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
@@ -165,7 +169,8 @@ def main() -> None:
     if args.teacher != "scene_passing_60":
         controller = tactical.LEGACY_CONTROLLER
     else:
-        controller = tactical.HOLD_CONTROLLER if args.controller == "hold" else tactical.SUT_CONTROLLER
+        controller = {"hold": tactical.HOLD_CONTROLLER, "smooth": tactical.SMOOTH_CONTROLLER,
+                      "level": tactical.SUT_CONTROLLER}[args.controller]
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else "_pilot" if args.pilot else ""))
     panel = progress.VAL_PANEL
     if args.check:
@@ -177,7 +182,7 @@ def main() -> None:
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
                 "tier": args.tier, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
                 "drop_teacher_failures": True, "val_panel": panel, "controller": controller,
-                "action": "tactical", "lane_change_weight": args.lane_change_weight}
+                "action": "tactical", "lane_change_weight": args.lane_change_weight, "head": args.head}
     if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -188,9 +193,12 @@ def main() -> None:
         observation_space = gym.spaces.Box(-0.0, 1.0, (OBS_DIM,), np.float32)
         action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
 
+    from avtest.policy import TacticalModel, fit_classify, load_policy
     if done_rounds:
-        model = PPO.load(out / "model_last.zip", device="cpu")
+        model = load_policy(out / "model_last.zip")
         print(f"resuming after round {done_rounds[-1]}", flush=True)
+    elif args.head == "classify":
+        model = TacticalModel(OBS_DIM, tuple(DEFAULTS["net"]), seed=DEFAULTS["seed"])
     else:
         model = PPO("MlpPolicy", Spaces(), n_steps=DEFAULTS["n_steps"], batch_size=DEFAULTS["batch_size"],
                     n_epochs=DEFAULTS["n_epochs"], learning_rate=DEFAULTS["learning_rate"], gamma=DEFAULTS["gamma"],
@@ -217,9 +225,12 @@ def main() -> None:
         obs = np.concatenate([s["obs"] for s in shards])
         act = np.concatenate([s["act"] for s in shards])
         n_samples = int(len(act))
-        fit_stats = fit(model, obs, act, args.epochs, rnd, args.lane_change_weight)
-        with torch.no_grad():                         # PPO later starts with small exploration noise (σ ≈ 0.22)
-            model.policy.log_std.fill_(INITIAL_LOG_STD)
+        if args.head == "classify":
+            fit_stats = fit_classify(model, obs, act, args.epochs, rnd)
+        else:
+            fit_stats = fit(model, obs, act, args.epochs, rnd, args.lane_change_weight)
+            with torch.no_grad():                     # PPO later starts with small exploration noise (σ ≈ 0.22)
+                model.policy.log_std.fill_(INITIAL_LOG_STD)
         model.save(out / "model_last.zip")
         (out / "checkpoints").mkdir(exist_ok=True)
         model.save(out / "checkpoints" / f"bc_round_{rnd:02d}.zip")

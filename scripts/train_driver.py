@@ -151,6 +151,10 @@ def main() -> None:
     env = VecMonitor(SubprocVecEnv([sim.training_env_fn(cfg["tier"], rank=i, seed=cfg["seed"] + 1000 * i + resume_steps // 1000)
                                     for i in range(cfg["envs"])], start_method="spawn"))
     if (out / "model_last.zip").exists():
+        from avtest.policy import is_tactical_model
+        if is_tactical_model(out / "model_last.zip"):
+            raise SystemExit("this warm start is a TacticalModel (classified lane decision); PPO fine-tunes only "
+                             "Stable-Baselines3 actors")
         from avtest.tactical import CONTROLLER_ENTRY, SUT_CONTROLLER, controller_for_model
         import zipfile
         with zipfile.ZipFile(out / "model_last.zip") as archive:
