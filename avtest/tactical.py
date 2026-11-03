@@ -32,6 +32,33 @@ THRESHOLD = 0.5
 # lat_cap: at 60 km/h the uncapped lane-change steering left the road (LOG.md, 2026-11-02).
 SUT_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": 1.0}
 LEGACY_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": None}
+# From d7 on, the controller a driver was trained with is written into its model file (CONTROLLER_ENTRY), so it
+# travels with every copy (models/sut.zip) and is covered by the model hash. HOLD_CONTROLLER (hold_lane) was tried
+# and made the teacher worse; it remains an option (pretrain_bc --controller hold).
+HOLD_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": 1.0, "hold_lane": True}
+CONTROLLER_ENTRY = "avtest_controller.json"
+
+
+def stamp_controller(model_path, settings: dict) -> None:
+    """Record the controller a freshly saved model was trained with inside its zip."""
+    import json
+    import zipfile
+    with zipfile.ZipFile(model_path, "a") as archive:
+        if CONTROLLER_ENTRY in archive.namelist():
+            raise ValueError(f"{model_path} already records a controller")
+        archive.writestr(CONTROLLER_ENTRY, json.dumps(settings, sort_keys=True))
+
+
+def controller_for_model(model_path, obs_size: int) -> dict:
+    """The controller a driver drives with: the one recorded in its file, else its generation's (d1-d3 legacy,
+    d4-d6 SUT_CONTROLLER)."""
+    import json
+    import zipfile
+    from .sim import OBS_DIM
+    with zipfile.ZipFile(model_path) as archive:
+        if CONTROLLER_ENTRY in archive.namelist():
+            return json.loads(archive.read(CONTROLLER_ENTRY))
+    return SUT_CONTROLLER if obs_size == OBS_DIM else LEGACY_CONTROLLER
 
 
 class TacticalController:
@@ -40,16 +67,25 @@ class TacticalController:
     mid-change no longer steers it back; only a command the other way cancels the change (LOG.md,
     2026-11-02: the imitated command hovers near the threshold and flickers). ``lat_cap``: the lateral
     error the steering sees is capped at this many metres, so a lane change drifts over instead of turning
-    hard toward the new lane's centre (at 60 km/h the uncapped turn overshot onto the centre line)."""
+    hard toward the new lane's centre (at 60 km/h the uncapped turn overshot onto the centre line).
 
-    def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None):
-        self.threshold, self.commit, self.lat_cap = threshold, commit, lat_cap
+    ``hold_lane`` (from d7): the controller holds a lane of its own instead of steering relative to the lane
+    the ego's centre is in. "Keep" means stay in the held lane, on whichever side of a line the centre is; a
+    change starts only when the command newly passes the threshold (a held command does not chain a second
+    change after arrival); the opposite command cancels it. With commands relative to the current lane, a car
+    straddling a line flipped its target with every wobble, and DAgger taught d6 to oscillate there: 5.8 lane
+    changes per scene against its teacher's 1.1 (LOG.md, 2026-11-03)."""
+
+    def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None,
+                 hold_lane: bool = False):
+        self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
         self.reset()
 
     def reset(self):
         self.heading_pid = PIDController(1.7, 0.01, 3.5)
         self.lateral_pid = PIDController(0.3, .002, 0.05)
         self.committed = None           # (direction, lane index) of a committed change under way
+        self.home, self.goal, self.last_direction = None, None, 0       # hold_lane state
 
     def target_lane(self, vehicle, command: float):
         navigation = vehicle.navigation
@@ -60,6 +96,8 @@ class TacticalController:
             return current
         index = refs.index(current)
         direction = 1 if command > self.threshold else -1 if command < -self.threshold else 0     # +1 = left
+        if self.hold_lane:
+            return refs[self._held_target(index, len(refs), direction)]
         if self.committed is not None:
             way, goal = self.committed
             if index == goal or goal >= len(refs):
@@ -75,6 +113,26 @@ class TacticalController:
         if self.commit and goal != index:
             self.committed = (direction, goal)
         return refs[goal]
+
+    def _held_target(self, index: int, lanes: int, direction: int) -> int:
+        """Lane index the hold_lane controller steers for: the lane it is changing to, else its held lane."""
+        self.home = index if self.home is None else min(self.home, lanes - 1)
+        onset = direction != 0 and direction != self.last_direction
+        self.last_direction = direction
+        if self.goal is not None:
+            way, goal = self.goal
+            if goal >= lanes:
+                self.goal = None
+            elif index == goal:
+                self.home, self.goal = goal, None             # arrived: this is the held lane now
+            elif onset and direction == -way:
+                self.goal = None                              # cancelled: back to the held lane
+                return self.home
+        if onset and self.goal is None:
+            goal = max(self.home - 1, 0) if direction > 0 else min(self.home + 1, lanes - 1)
+            if goal != self.home:
+                self.goal = (direction, goal)
+        return self.goal[1] if self.goal is not None else self.home
 
     def low_level(self, vehicle, action) -> np.ndarray:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
@@ -176,13 +234,15 @@ TEACHERS = {"cautious_idm": LabelledCautiousIDM, "scene_passing": ScenePassingTe
 class TeacherDriver:
     """A teacher driving through its own tactical labels and this controller: the best a perfect student can do."""
 
-    def __init__(self, teacher: str):
+    def __init__(self, teacher: str, controller: dict | None = None):
         self.name, self.policy_class = f"teacher_{teacher}", TEACHERS[teacher]
+        # by default the controller its students train with: SUT_CONTROLLER for the 60 km/h teacher, else legacy
+        self.controller_settings = controller or (SUT_CONTROLLER if self.policy_class is ScenePassingTeacher60
+                                                  else LEGACY_CONTROLLER)
 
     def start(self, env):
         self.policy = self.policy_class(env.agent, env.scenario.map_seed)
-        self.controller = TacticalController(**(SUT_CONTROLLER if self.policy_class is ScenePassingTeacher60
-                                                 else LEGACY_CONTROLLER))
+        self.controller = TacticalController(**self.controller_settings)
 
     def act(self, env, obs):
         _, acceleration = self.policy.act(env.agent.id)

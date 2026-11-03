@@ -151,6 +151,13 @@ def main() -> None:
     env = VecMonitor(SubprocVecEnv([sim.training_env_fn(cfg["tier"], rank=i, seed=cfg["seed"] + 1000 * i + resume_steps // 1000)
                                     for i in range(cfg["envs"])], start_method="spawn"))
     if (out / "model_last.zip").exists():
+        from avtest.tactical import CONTROLLER_ENTRY, SUT_CONTROLLER, controller_for_model
+        import zipfile
+        with zipfile.ZipFile(out / "model_last.zip") as archive:
+            recorded = CONTROLLER_ENTRY in archive.namelist()
+        if recorded and controller_for_model(out / "model_last.zip", None) != SUT_CONTROLLER:
+            raise SystemExit("this warm start was trained with another controller (hold_lane); PPO's training env "
+                             "uses SUT_CONTROLLER and its checkpoints would not record one: not wired up yet")
         model = PPO.load(out / "model_last.zip", env=env, device="cpu", **{k: cfg[k] for k in PPO_SETTINGS})
     else:
         model = PPO("MlpPolicy", env, seed=cfg["seed"], device="cpu", verbose=0,

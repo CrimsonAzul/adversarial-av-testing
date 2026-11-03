@@ -22,11 +22,10 @@ class SUTDriver:
 
     def __init__(self, model_path: Path):
         from stable_baselines3 import PPO
-        from .sim import OBS_DIM
-        from .tactical import LEGACY_CONTROLLER, SUT_CONTROLLER, TacticalController
+        from .tactical import TacticalController, controller_for_model
         self.model = PPO.load(str(model_path), device="cpu")
-        # each generation drives with the controller it was trained with (d1–d3: 320 inputs, legacy controller)
-        self.controller_settings = SUT_CONTROLLER if self.obs_size == OBS_DIM else LEGACY_CONTROLLER
+        # each driver drives with the controller it was trained with (recorded in the file from d7 on)
+        self.controller_settings = controller_for_model(model_path, self.obs_size)
         self.controller = TacticalController(**self.controller_settings)
 
     @property
@@ -203,14 +202,15 @@ def qualified_sut(root: Path) -> tuple[Path, dict]:
     """models/sut.zip and models/QUALIFIED.json, after checking that the model file and the SUT controller
     settings in avtest.tactical are still the ones that passed qualification."""
     from .records import read_json, sha256_file
-    from .tactical import SUT_CONTROLLER
     record, model = root / "models/QUALIFIED.json", root / "models/sut.zip"
     if not record.exists():
         raise SystemExit("No qualified SUT: run scripts.qualify first (docs/RUNBOOK.md, step 2).")
     q = read_json(record)
     if sha256_file(model) != q["model_sha256"]:
         raise SystemExit("models/sut.zip does not match models/QUALIFIED.json")
-    if q.get("controller") != SUT_CONTROLLER:
-        raise SystemExit(f"SUT_CONTROLLER in avtest/tactical.py is {SUT_CONTROLLER}, "
+    from .tactical import controller_for_model
+    controller = controller_for_model(model, q.get("obs_size"))
+    if q.get("controller") != controller:
+        raise SystemExit(f"models/sut.zip drives with controller {controller}, "
                          f"but the qualified SUT used {q.get('controller')}")
     return model, q

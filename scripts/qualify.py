@@ -8,7 +8,7 @@ written and hashed before any episode runs. Every scene runs the SUT and all thr
 reference drivers. Pass when, over scenes at least one reference completes:
     SUT success ≥ 98%, 95% Wilson lower bound ≥ 96%, collision + off-road ≤ 2%.
 The first passing tier is frozen in models/QUALIFIED.json with the model hash and the SUT
-controller settings (avtest.tactical.SUT_CONTROLLER), and the model is copied to models/sut.zip.
+controller it drives with (avtest.tactical.controller_for_model), and the model is copied to models/sut.zip.
 A failed attempt's panel becomes development data; re-test only with a new --attempt number.
 Results append to docs/QUALIFICATION.md.
 """
@@ -24,7 +24,7 @@ import numpy as np
 
 from avtest import scenario, seeds, stats
 from avtest.records import JsonlLog, ROOT, read_json, sha256_file, sha256_json, write_json
-from avtest.tactical import SUT_CONTROLLER
+from avtest.tactical import controller_for_model
 
 PANEL = 500
 SUCCESS_MIN, WILSON_MIN, CRASH_MAX = 0.98, 0.96, 0.02
@@ -60,8 +60,10 @@ def main() -> None:
 
     from stable_baselines3 import PPO
     from avtest.sim import OBS_DIM
-    if PPO.load(args.model, device="cpu").observation_space.shape[0] != OBS_DIM:
-        raise SystemExit("this driver uses the d1–d3 sensors; qualification records today's SUT_CONTROLLER and sensors")
+    obs_size = int(PPO.load(args.model, device="cpu").observation_space.shape[0])
+    if obs_size != OBS_DIM:
+        raise SystemExit("this driver uses the d1–d3 sensors; qualification is for today's sensors")
+    controller = controller_for_model(args.model, obs_size)
     model_hash = sha256_file(args.model)
     panel_seed = 1000 + args.attempt
     map_seeds = seeds.panel_seeds("qual", args.panel, panel_seed)
@@ -71,7 +73,7 @@ def main() -> None:
         out = ROOT / "runs/qualification" / f"attempt{args.attempt}_{tier}"
         # the SUT is its model (by hash, not path, so a resume may spell the path differently) plus its controller
         panel = {"tier": tier, "attempt": args.attempt, "panel_seed": panel_seed, "map_seeds": map_seeds,
-                 "thetas": thetas.tolist(), "model_sha256": model_hash, "controller": SUT_CONTROLLER}
+                 "thetas": thetas.tolist(), "model_sha256": model_hash, "controller": controller}
         if (out / "panel.json").exists():
             if read_json(out / "panel.json")["sha256"] != sha256_json(panel):
                 raise SystemExit(f"{out} holds a different panel or model; use a new --attempt")
@@ -100,7 +102,8 @@ def main() -> None:
             (ROOT / "models").mkdir(exist_ok=True)
             shutil.copy2(args.model, ROOT / "models/sut.zip")
             write_json(ROOT / "models/QUALIFIED.json", {
-                "tier": tier, "attempt": args.attempt, "model_sha256": model_hash, "controller": SUT_CONTROLLER,
+                "tier": tier, "attempt": args.attempt, "model_sha256": model_hash, "controller": controller,
+                "obs_size": obs_size,
                 "source": str(args.model),
                 "result": result, "utc": datetime.now(timezone.utc).isoformat()})
             break

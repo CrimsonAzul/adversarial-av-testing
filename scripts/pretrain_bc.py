@@ -70,8 +70,7 @@ def _collect(task: dict) -> dict:
             env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), task["tier"]))
             obs, _ = env.reset()
             teacher = tactical.TEACHERS[task["teacher"]](env.agent, env.scenario.map_seed)
-            controller = tactical.TacticalController(**(tactical.SUT_CONTROLLER if task["teacher"] == "scene_passing_60"
-                                                        else tactical.LEGACY_CONTROLLER))
+            controller = tactical.TacticalController(**task["controller"])
             teacher_drives = student is None or rng.random() < task["beta"]
             step = 0
             while True:
@@ -98,7 +97,7 @@ def _collect(task: dict) -> dict:
             "act": np.asarray(act_list, dtype=np.float32).reshape(-1, 2), "outcomes": outcomes}
 
 
-def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict:
+def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int, lane_change_weight: float = LANE_CHANGE_WEIGHT) -> dict:
     """Regress the PPO actor's mean action onto the teacher's (lane command, throttle) by weighted MSE.
 
     Lane changes are about 2% of steps; their samples get LANE_CHANGE_WEIGHT so the student does not
@@ -111,7 +110,7 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict
     optimizer = torch.optim.Adam(params, lr=1e-3)
     gen = torch.Generator().manual_seed(seed)
     Y = torch.as_tensor(act)
-    W = torch.where(Y[:, 0].abs() > 0.5, LANE_CHANGE_WEIGHT, 1.0)[:, None]
+    W = torch.where(Y[:, 0].abs() > 0.5, lane_change_weight, 1.0)[:, None]
     mse = mae = 0.0
     for _ in range(epochs):
         order = torch.randperm(len(Y), generator=gen)
@@ -148,6 +147,11 @@ def main() -> None:
     p.add_argument("--check", action="store_true")
     p.add_argument("--pilot", action="store_true", help="3 rounds x 240 episodes, 100-scene validation")
     p.add_argument("--teacher", default="scene_passing_60", choices=("scene_passing_60", "scene_passing", "cautious_idm"))
+    p.add_argument("--controller", default="level", choices=("level", "hold"),
+                   help="60 km/h teacher only: lane-relative commands (d4 on) or the hold_lane controller, which "
+                        "made the teacher itself worse (96.4% vs 98.0% on T1; LOG.md, 2026-11-03)")
+    p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
+                   help="loss weight of lane-change samples (d2-d6: 10; d7: 3)")
     p.add_argument("--tier", default=TIER, choices=("T1", "T2"),
                    help="training scenes; with T1 the best round is chosen on 200 T1 validation scenes (from d5)")
     args = p.parse_args()
@@ -157,6 +161,11 @@ def main() -> None:
     from avtest.sim import OBS_DIM
     import gymnasium as gym
 
+    from avtest import tactical
+    if args.teacher != "scene_passing_60":
+        controller = tactical.LEGACY_CONTROLLER
+    else:
+        controller = tactical.HOLD_CONTROLLER if args.controller == "hold" else tactical.SUT_CONTROLLER
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else "_pilot" if args.pilot else ""))
     panel = progress.VAL_PANEL
     if args.check:
@@ -167,8 +176,8 @@ def main() -> None:
         raise SystemExit(f"{out} already has PPO training; pretrain into a new --name")
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
                 "tier": args.tier, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
-                "drop_teacher_failures": True, "val_panel": panel,
-                "action": "tactical", "lane_change_weight": LANE_CHANGE_WEIGHT}
+                "drop_teacher_failures": True, "val_panel": panel, "controller": controller,
+                "action": "tactical", "lane_change_weight": args.lane_change_weight}
     if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -196,7 +205,7 @@ def main() -> None:
         current = None if rnd == 0 else str(out / "model_last.zip")
         per = max(1, args.episodes // args.workers)
         tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd, "teacher": args.teacher,
-                  "tier": args.tier}
+                  "tier": args.tier, "controller": controller}
                  for w in range(args.workers)]
         with ctx.Pool(args.workers) as pool:
             results = pool.map(_collect, tasks)
@@ -208,12 +217,14 @@ def main() -> None:
         obs = np.concatenate([s["obs"] for s in shards])
         act = np.concatenate([s["act"] for s in shards])
         n_samples = int(len(act))
-        fit_stats = fit(model, obs, act, args.epochs, rnd)
+        fit_stats = fit(model, obs, act, args.epochs, rnd, args.lane_change_weight)
         with torch.no_grad():                         # PPO later starts with small exploration noise (σ ≈ 0.22)
             model.policy.log_std.fill_(INITIAL_LOG_STD)
         model.save(out / "model_last.zip")
         (out / "checkpoints").mkdir(exist_ok=True)
         model.save(out / "checkpoints" / f"bc_round_{rnd:02d}.zip")
+        for saved in (out / "model_last.zip", out / "checkpoints" / f"bc_round_{rnd:02d}.zip"):
+            tactical.stamp_controller(saved, controller)       # the driver drives with what it trained with
         del obs, act, shards
         outcomes = [o for r in results for o in r["outcomes"]]
         rollout = [o for t, o in outcomes if not t]

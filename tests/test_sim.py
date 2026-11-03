@@ -328,3 +328,38 @@ def test_background_traffic_cruises_at_road_speed(env):
     moving = [s for s in top.values() if s > 5]
     assert moving and all(s <= TrafficIDMPolicy.SPEED_RANGE_KMH[1] + 3 for s in moving)
     assert max(moving) > 40                                    # well above MetaDrive's 30 km/h
+
+
+def test_hold_lane_controller():
+    """hold_lane: keep means the held lane; a change starts on a fresh command and does not chain."""
+    from types import SimpleNamespace
+    from avtest.tactical import TacticalController
+    lanes = ["L", "M", "R"]
+    nav = SimpleNamespace(current_lane="M", current_ref_lanes=lanes)
+    car = SimpleNamespace(navigation=nav)
+    c = TacticalController(hold_lane=True)
+    assert c.target_lane(car, 0.0) == "M"
+    nav.current_lane = "R"                                   # straddling a line: the centre wobbles into R
+    assert c.target_lane(car, 0.0) == "M"                    # ... but keep means the held lane
+    nav.current_lane = "M"
+    assert c.target_lane(car, 0.7) == "L"                    # fresh command: change left
+    assert c.target_lane(car, 0.7) == "L" and c.target_lane(car, 0.0) == "L"   # held or released: goes on
+    nav.current_lane = "L"                                   # arrived
+    assert c.target_lane(car, 0.0) == "L" and c.home == 0
+
+    c = TacticalController(hold_lane=True)
+    nav.current_lane = "R"
+    assert c.target_lane(car, 0.9) == "M"
+    nav.current_lane = "M"                                   # arrives while the command is still held
+    assert c.target_lane(car, 0.9) == "M" and c.target_lane(car, 0.9) == "M"   # no second change to L
+    assert c.target_lane(car, 0.0) == "M"
+    assert c.target_lane(car, 0.9) == "L"                    # released, then pressed again: a new change
+
+    c = TacticalController(hold_lane=True)
+    nav.current_lane = "M"
+    assert c.target_lane(car, 0.8) == "L"
+    assert c.target_lane(car, -0.8) == "M"                   # the other way cancels: back to the held lane ...
+    assert c.target_lane(car, -0.8) == "M"                   # ... without starting a change to the right
+    assert c.target_lane(car, 0.0) == "M" and c.target_lane(car, -0.8) == "R"
+    c.reset()
+    assert c.home is None and c.goal is None

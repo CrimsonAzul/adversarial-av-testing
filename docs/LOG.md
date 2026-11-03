@@ -601,3 +601,27 @@ All results below are on the 500 attempt-1 T1 scenes, in 50–60 km/h traffic (`
 - On the 500 T1 dev scenes: **489/499 (98.0%, Wilson low 0.964)**, 1.6% crashes, **1.08 lane changes per scene** (lead-brake 1.33, obstacle 0.81), 2 stuck.
 
 **Next:** d6, the same as d5 with this teacher.
+
+## 2026-11-03 (early morning) — d6; why the 60 km/h students weave; d7
+
+**d6** (closing-speed teacher, T1, 50–60 km/h traffic, lane-change weight 10): best T1 validation 91.5% at round 4.
+
+- **On the 500 T1 dev scenes:** 457/499 avoidable scenes, **91.6%** (Wilson low 0.888). Lead-brake 244/260, obstacle 213/239, 36 collisions.
+- **Lane changes:** 5.75 per scene, against the teacher's 1.08. Every one of the 42 failures involves lane changes.
+
+**The weaving, traced on two obstacle scenes.**
+
+- d6 switches between two lanes every 0.5–1 s, often while its command is near 0 and the teacher says "keep". It rides the lane line.
+- A lane command is relative to the lane the ego's centre is in, so while it straddles a line, "the lane it is in", and with it the steering target, flips with every wobble.
+- DAgger then puts the student in these straddling states, where the teacher's corrections point both ways, and the student learns ±0.8 commands there.
+- **Network size is not the cause** (the capacity test in the previous entry); the 1024 × 512 × 256 net also stays at 79.7% lane agreement.
+
+**Tried: a controller that holds its own target lane** (`hold_lane`): "keep" means stay in the held lane, a change starts only on a fresh command, and the opposite command cancels it.
+
+- Models now record the controller they were trained with inside their zip (`tactical.stamp_controller`, `controller_for_model`), so it travels with copies and is covered by the hash. Qualification records the model's own controller and its input size. PPO refuses a warm start trained with another controller, because that path is not wired up yet.
+- **Teacher through its labels with `hold_lane`: 96.4%** (481/499), 3.0% crashes, against 98.0% with lane-relative commands. Its labels are relative to the current lane, so a second change it wants needs a fresh command it never gives; fixing that would need the student to see the controller's hidden target.
+- **Not adopted.** It remains available as `--controller hold`; the default is `level`.
+
+**d7:** d6's settings with the lane-change weight lowered from 10 to 3 (`--lane-change-weight 3`). The ±0.8 commands in straddling states come from a small number of lane-change samples weighted 10×.
+
+**Tests:** 43 pass. New ones cover the `hold_lane` logic and the controller recorded in the model file.

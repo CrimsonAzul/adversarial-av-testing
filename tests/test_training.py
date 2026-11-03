@@ -72,3 +72,24 @@ def test_imitation_fit_learns_teacher_actions():
     test = rng.random((1000, 259)).astype(np.float32)          # generalises, not just memorises
     truth = np.stack([np.tanh(3 * (test[:, 0] - 0.5)), np.tanh(3 * (test[:, 1] - test[:, 2]))], axis=1)
     assert np.abs(model.predict(test, deterministic=True)[0] - truth).mean() < 0.1
+
+
+def test_model_file_records_its_controller(tmp_path):
+    """From d7 the training controller is written into the model zip; the model still loads, SUTDriver uses it."""
+    from avtest.drivers import SUTDriver
+    from avtest.sim import OBS_DIM
+    from avtest.tactical import HOLD_CONTROLLER, SUT_CONTROLLER, controller_for_model, stamp_controller
+
+    class Spaces(gym.Env):
+        observation_space = gym.spaces.Box(0.0, 1.0, (OBS_DIM,), np.float32)
+        action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
+
+    path = tmp_path / "model.zip"
+    PPO("MlpPolicy", Spaces(), n_steps=64, batch_size=64, device="cpu").save(path)
+    assert controller_for_model(path, OBS_DIM) == SUT_CONTROLLER          # unstamped 800-input model: d4-d6
+    stamp_controller(path, HOLD_CONTROLLER)
+    assert controller_for_model(path, OBS_DIM) == HOLD_CONTROLLER
+    assert SUTDriver(path).controller_settings == HOLD_CONTROLLER and SUTDriver(path).controller.hold_lane
+    import pytest
+    with pytest.raises(ValueError):
+        stamp_controller(path, HOLD_CONTROLLER)                          # recorded once, never overwritten

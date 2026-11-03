@@ -113,22 +113,26 @@ def test_ask_tell_adversaries_stay_in_bounds_and_resume_exactly(name):
 
 
 def test_search_refuses_a_changed_sut(tmp_path):
+    import zipfile
     from avtest.drivers import qualified_sut
     from avtest.records import sha256_file, write_json
-    from avtest.tactical import SUT_CONTROLLER
+    from avtest.tactical import HOLD_CONTROLLER, SUT_CONTROLLER, stamp_controller
     with pytest.raises(SystemExit, match="No qualified SUT"):
         qualified_sut(tmp_path)
     (tmp_path / "models").mkdir()
     model = tmp_path / "models/sut.zip"
-    model.write_bytes(b"weights")
-    record = {"tier": "T1", "model_sha256": sha256_file(model), "controller": dict(SUT_CONTROLLER)}
+    with zipfile.ZipFile(model, "w") as archive:
+        archive.writestr("data", "weights")
+    stamp_controller(model, HOLD_CONTROLLER)
+    record = {"tier": "T1", "model_sha256": sha256_file(model), "controller": dict(HOLD_CONTROLLER), "obs_size": 800}
     write_json(tmp_path / "models/QUALIFIED.json", record)
     assert qualified_sut(tmp_path) == (model, record)
-    write_json(tmp_path / "models/QUALIFIED.json", {**record, "controller": {**SUT_CONTROLLER, "commit": "other"}})
-    with pytest.raises(SystemExit, match="SUT_CONTROLLER"):
+    write_json(tmp_path / "models/QUALIFIED.json", {**record, "controller": dict(SUT_CONTROLLER)})
+    with pytest.raises(SystemExit, match="controller"):
         qualified_sut(tmp_path)
     write_json(tmp_path / "models/QUALIFIED.json", record)
-    model.write_bytes(b"retrained")
+    with zipfile.ZipFile(model, "a") as archive:
+        archive.writestr("extra", "retrained")
     with pytest.raises(SystemExit, match="does not match"):
         qualified_sut(tmp_path)
 
