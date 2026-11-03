@@ -25,6 +25,8 @@ from metadrive.component.static_object.traffic_object import TrafficWarning
 from metadrive.component.vehicle.vehicle_type import DefaultVehicle
 from metadrive.envs.metadrive_env import MetaDriveEnv
 from metadrive.manager.base_manager import BaseManager
+from metadrive.manager.traffic_manager import PGTrafficManager
+from metadrive.policy.idm_policy import IDMPolicy
 
 from . import scenario as sc
 from . import seeds
@@ -263,6 +265,22 @@ class EventManager(BaseManager):
         return {}
 
 
+# Background traffic at 50-60 km/h on the 60 km/h road (drivers.TrafficIDMPolicy), from 2026-11-03 for every
+# driver: the road, not the driver, sets the traffic. Results logged before that date used MetaDrive's 30 km/h
+# traffic; ENV_TAG marks result files made with the current environment.
+ROAD_TRAFFIC = True
+ENV_TAG = "traffic50-60"
+
+
+class RoadTrafficManager(PGTrafficManager):
+    """MetaDrive's trigger-mode traffic, driven by drivers.TrafficIDMPolicy instead of its 30 km/h IDMPolicy."""
+
+    def add_policy(self, object_id, policy_class, *args, **kwargs):
+        from .drivers import TrafficIDMPolicy
+        return super().add_policy(object_id, TrafficIDMPolicy if policy_class is IDMPolicy else policy_class,
+                                  *args, **kwargs)
+
+
 class AVTestEnv(MetaDriveEnv):
     """MetaDriveEnv configured per episode from a decoded Scenario."""
 
@@ -274,6 +292,8 @@ class AVTestEnv(MetaDriveEnv):
 
     def setup_engine(self):
         super().setup_engine()
+        if ROAD_TRAFFIC:
+            self.engine.update_manager("traffic_manager", RoadTrafficManager())
         self.engine.register_manager("event_manager", EventManager())
 
     def _is_out_of_road(self, vehicle):

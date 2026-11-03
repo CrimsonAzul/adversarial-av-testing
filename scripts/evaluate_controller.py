@@ -11,7 +11,7 @@ reported: collision/off-road rate, success per event, and lane changes per episo
 if a lower threshold made the driver weave. The panel was failed, so tuning on it is allowed
 (docs/DESIGN.md); a chosen setting is then qualified on a new panel.
 
-Writes runs/diagnose/attempt<N>_<tier>_controller_<model hash>.jsonl as results arrive; the same command continues an
+Writes runs/diagnose/attempt<N>_<tier>_controller_<model hash>[_<env tag>].jsonl as results arrive; the same command continues an
 interrupted comparison.
 """
 from __future__ import annotations
@@ -89,7 +89,9 @@ def main() -> None:
         settings.append((item, None, False, second) if first in ("teacher", "driver") else (item, float(first), second == "on", None))
     # results are appended as they arrive, so an interrupted comparison continues where it stopped
     model_hash = sha256_file(args.model)
-    out = ROOT / "runs/diagnose" / f"attempt{args.attempt}_{args.tier}_controller_{model_hash[:12]}.jsonl"
+    from avtest.sim import ENV_TAG, ROAD_TRAFFIC
+    tag = f"_{ENV_TAG}" if ROAD_TRAFFIC else ""        # results from different environments never mix
+    out = ROOT / "runs/diagnose" / f"attempt{args.attempt}_{args.tier}_controller_{model_hash[:12]}{tag}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     log = JsonlLog(out)
     previous = log.read()

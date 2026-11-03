@@ -302,3 +302,29 @@ def test_60_kmh_lane_change_stays_on_the_road(env):
             break
     assert info["outcome"] == "success"
     assert len(plan) == 1 and env.agent.lane_index[2] == start     # both changes happened
+
+
+def test_background_traffic_cruises_at_road_speed(env):
+    """Background traffic is TrafficIDMPolicy at 50-60 km/h (sim.ROAD_TRAFFIC), not MetaDrive's 30 km/h IDM."""
+    import collections
+    from avtest.drivers import RoadIDMDriver, TrafficIDMPolicy
+    names = [p.name for p in sc.PARAMS]
+    theta = sc.with_event(np.random.default_rng(4).random(sc.DIM), "obstacle", "T1")
+    for name, value in (("traffic_density", 1.0), ("block_1", 0.0), ("block_2", 0.0), ("block_3", 0.0)):
+        theta[names.index(name)] = value
+    env.load(sc.decode(theta, 100_321, "T1"))                  # straight road, the tier's densest traffic
+    obs, _ = env.reset()
+    driver = RoadIDMDriver()
+    driver.start(env)
+    top, policies = collections.defaultdict(float), set()
+    while True:
+        obs, _, term, trunc, info = env.step(driver.act(env, obs))
+        for v in env.engine.traffic_manager._traffic_vehicles:
+            policies.add(type(env.engine.get_policy(v.name)).__name__)
+            top[v.name] = max(top[v.name], v.speed_km_h)
+        if term or trunc:
+            break
+    assert policies == {"TrafficIDMPolicy"}
+    moving = [s for s in top.values() if s > 5]
+    assert moving and all(s <= TrafficIDMPolicy.SPEED_RANGE_KMH[1] + 3 for s in moving)
+    assert max(moving) > 40                                    # well above MetaDrive's 30 km/h

@@ -514,3 +514,33 @@ Run d2's teacher stays available as `--teacher cautious_idm`.
 - **Result after the change:** 490/498 attempt-1-solvable scenes, **98.4%** (Wilson low 0.969). Lead-brake 255/261, obstacle 235/237. No real change: the difference is within run-to-run noise.
 - **What the remaining failures share:** all 6 lead-brake collisions happen during lane changes in traffic. At 60 km/h the drivers keep overtaking MetaDrive's background traffic, which drives at 30 km/h; both 60 km/h IDMs average about 1 lane change per scene.
 - **Consequence:** the teacher sits right at the gate, and a student usually lands a little below its teacher. A realistic background traffic speed would remove most forced overtakes. That is the next lever if d4 falls short.
+
+## 2026-11-03 (night) — d4, the first 60 km/h driver: 87% on T1, undone by lane changes
+
+The author paused d4 after round 2 and resumed it at 01:31. Round 3 had been trained but not validated, so it is redone on resume. Before resuming, `model_last.zip` was reset to round 2's network (round 3's kept as `checkpoints/bc_round_03_unvalidated.zip`), so the redone round 3 collects with round 2's student, as an uninterrupted run would. The author had also overclocked the CPU. Under sustained full load it ran at about 3.5 GHz, 6% above base, so the effect on long runs is probably small.
+
+| d4 round | T2 val | T1 val | T2 failures |
+|---|---|---|---|
+| 0 | 50% | 45% | 63 stuck, 33 collisions |
+| 1 | 12% | 23% | 148 collisions, 28 off-road |
+| 2 | 48% | 63% | 87 collisions |
+| 3 | 47% | 71% | 101 collisions |
+| **4 (best)** | **77%** | **89%** | 44 collisions |
+| 5 | 72% | 75% | 49 collisions |
+
+- **Imitation fits worse at 60 km/h:** the action error rose from 0.13 to 0.29 over the rounds. In round 0, 112 of 600 teacher demonstrations on T2 failed and were dropped, against 43 for d3.
+- **On the 500 T1 dev scenes, round 4 completes 434/499 avoidable scenes (87.0%,** Wilson low 0.837). Lead-brake 232/261, obstacle 202/238.
+- **62 of its 65 failures involve lane changes.** It changes lanes 4.4 times per scene, against its teacher's 1.1, mostly overtaking MetaDrive's 30 km/h background traffic. No qualification attempt.
+
+**Two changes for d5:**
+
+1. **Background traffic at 50–60 km/h** (`sim.ROAD_TRAFFIC`, `drivers.TrafficIDMPolicy`: RoadIDMPolicy at a seeded per-vehicle speed, 50 m look-ahead).
+   - Traffic crawling at 30 km/h on a 60 km/h road forced about one overtake per scene. Every lead-brake collision of the teacher, and almost every d4 failure, happened in a lane change.
+   - This changes the environment for every driver; results before 2026-11-03 used 30 km/h traffic. Result files from the new environment carry the tag `traffic50-60`.
+   - Checked: traffic is deterministic, and on a curvy map traffic tops out at 45–55 km/h. Test added.
+2. **`pretrain_bc --tier T1`:** train on the tier being qualified. The validation panel stays (200 T2 scenes); the T1 part grows from 100 to 200 scenes, and the best round is chosen on it.
+   - At 60 km/h the teacher completes about 82% of T2 scenes (measured with uncapped steering), so T2 demonstrations are often dropped failures and its cut-in labels are poor.
+
+**Tests:** 40 pass.
+
+**Next:** the teacher and the references in the new traffic on the 500 T1 dev scenes (running), then d5 if the teacher improves.

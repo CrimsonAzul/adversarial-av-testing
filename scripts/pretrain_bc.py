@@ -67,7 +67,7 @@ def _collect(task: dict) -> dict:
     try:
         for _ in range(task["episodes"]):
             episode_obs, episode_act = [], []
-            env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), TIER))
+            env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), task["tier"]))
             obs, _ = env.reset()
             teacher = tactical.TEACHERS[task["teacher"]](env.agent, env.scenario.map_seed)
             controller = tactical.TacticalController(**(tactical.SUT_CONTROLLER if task["teacher"] == "scene_passing_60"
@@ -148,6 +148,8 @@ def main() -> None:
     p.add_argument("--check", action="store_true")
     p.add_argument("--pilot", action="store_true", help="3 rounds x 240 episodes, 100-scene validation")
     p.add_argument("--teacher", default="scene_passing_60", choices=("scene_passing_60", "scene_passing", "cautious_idm"))
+    p.add_argument("--tier", default=TIER, choices=("T1", "T2"),
+                   help="training scenes; with T1 the best round is chosen on 200 T1 validation scenes (from d5)")
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
@@ -164,7 +166,7 @@ def main() -> None:
     if (out / "train_log.jsonl").exists():
         raise SystemExit(f"{out} already has PPO training; pretrain into a new --name")
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
-                "tier": TIER, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
+                "tier": args.tier, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
                 "drop_teacher_failures": True, "val_panel": panel,
                 "action": "tactical", "lane_change_weight": LANE_CHANGE_WEIGHT}
     if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
@@ -193,7 +195,8 @@ def main() -> None:
         t0 = time.time()
         current = None if rnd == 0 else str(out / "model_last.zip")
         per = max(1, args.episodes // args.workers)
-        tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd, "teacher": args.teacher}
+        tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd, "teacher": args.teacher,
+                  "tier": args.tier}
                  for w in range(args.workers)]
         with ctx.Pool(args.workers) as pool:
             results = pool.map(_collect, tasks)
@@ -215,7 +218,7 @@ def main() -> None:
         outcomes = [o for r in results for o in r["outcomes"]]
         rollout = [o for t, o in outcomes if not t]
         report = progress.checkpoint_report(out / "model_last.zip", out, f"bc_round_{rnd:02d}", workers=min(4, args.workers),
-                                            panel=panel, tier=TIER, t1_panel=min(panel, 100))
+                                            panel=panel, tier=progress.TIER, t1_panel=panel if args.tier == "T1" else min(panel, 100))
         row = {"round": rnd, "samples": n_samples, **fit_stats, "collect_s": collect_s, "wall_s": time.time() - t0,
                "teacher_episodes": sum(t for t, _ in outcomes),
                "teacher_failures_dropped": sum(t and o != "success" for t, o in outcomes),
@@ -228,12 +231,13 @@ def main() -> None:
               f"{progress.headline(report)} | {row['wall_s'] / 60:.1f} min", flush=True)
     # DAgger rolls out the latest student each round; PPO starts from the round that validated best
     rows = log.read()
-    best = max(rows, key=lambda r: (r["val_success"], r["round"]))
+    select = "val_t1_success" if args.tier == "T1" else "val_success"      # the training tier's validation
+    best = max(rows, key=lambda r: (r[select], r["round"]))
     shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_last.zip")
     shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_best_bc.zip")
     write_json(out / "bc_done.json", {"rounds": args.rounds, "best_round": best["round"],
-                                      "best_val_success": best["val_success"], "final": rows[-1]})
-    print(f"warm start: best round {best['round']} (validation {progress.pct(best['val_success'])}) saved as "
+                                      "best_val_success": best["val_success"], "selected_on": select, "final": rows[-1]})
+    print(f"warm start: best round {best['round']} ({select} {progress.pct(best[select])}) saved as "
           f"{out / 'model_last.zip'}; recordings in {out / 'recordings'}; "
           f"continue with: python -m scripts.train_driver --name {args.name}", flush=True)
 

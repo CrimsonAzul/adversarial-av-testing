@@ -140,6 +140,21 @@ class CautiousRoadIDMPolicy(RoadIDMPolicy):
     TIME_WANTED = 2.0
 
 
+class TrafficIDMPolicy(RoadIDMPolicy):
+    """Background traffic on the 60 km/h road (avtest.sim.ROAD_TRAFFIC): RoadIDMPolicy cruising at a speed drawn
+    per vehicle from SPEED_RANGE_KMH with the policy's seeded generator, looking 50 m ahead. MetaDrive's traffic
+    cruises at 30 km/h: d4 changed lanes 4.4 times per scene overtaking it, and 62 of its 65 T1 failures, like
+    every lead-brake collision of the 60 km/h teacher, came with lane changes (LOG.md, 2026-11-03)."""
+
+    SPEED_RANGE_KMH = (50.0, 60.0)
+    LOOKAHEAD_M = MAX_LONG_DIST = 50.0
+
+    def __init__(self, control_object, random_seed):
+        super().__init__(control_object, random_seed)
+        self.NORMAL_SPEED = float(self.np_random.uniform(*self.SPEED_RANGE_KMH))   # per vehicle; reset() reads it
+        self.target_speed = self.NORMAL_SPEED
+
+
 class IDMDriver:
     name = "idm"
     policy_class = IDMPolicy
