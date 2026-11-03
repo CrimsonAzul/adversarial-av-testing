@@ -94,7 +94,7 @@ class TacticalController:
 
     def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None,
                  hold_lane: bool = False, smooth: float | None = None, debounce: int = 0,
-                 aeb_ttc: float | None = None):
+                 aeb_ttc: float | None = None, lc_guard_m: float | None = None):
         """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
         direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
         Both against d6's visible vibration (LOG.md, 2026-11-03); off by default.
@@ -105,9 +105,15 @@ class TacticalController:
         aeb_ttc seconds, or with anything closer than AEB_HOLD_GAP_M in its path, it brakes fully. Steering and
         lane choice stay with the planner. (A first version also braked half below twice aeb_ttc: braking and
         the planner's throttle then alternated every step and the car crept into the obstacle.) Six 60 km/h students plateaued at 87-91% on T1, and most of their collisions came without any
-        braking (LOG.md, 2026-11-03)."""
+        braking (LOG.md, 2026-11-03).
+
+        ``lc_guard_m``: a lane-change guard, the counterpart of the braking layer for lane choice. A commanded
+        change is replaced by "keep" while the target lane holds a stopped vehicle or a static object within this
+        many metres ahead (``stopped_object_ahead``), unless the ego's own lane is blocked nearer. In 10 of
+        d10's 24 failures on the T1 dev panel it moved into the obstacle's lane 14-51 m before the obstacle,
+        against the teacher's label, and was then held behind it by the braking layer (LOG.md, 2026-11-03)."""
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
-        self.smooth, self.debounce, self.aeb_ttc = smooth, debounce, aeb_ttc
+        self.smooth, self.debounce, self.aeb_ttc, self.lc_guard_m = smooth, debounce, aeb_ttc, lc_guard_m
         self.reset()
 
     def reset(self):
@@ -116,6 +122,7 @@ class TacticalController:
         self.committed = None           # (direction, lane index) of a committed change under way
         self.home, self.goal, self.last_direction = None, None, 0       # hold_lane state
         self.throttle, self.pending, self.pending_steps, self.effective = 0.0, 0, 0, 0   # smooth / debounce state
+        self.guarding = False           # lc_guard_m: the last command was replaced by "keep"
 
     def target_lane(self, vehicle, command: float):
         navigation = vehicle.navigation
@@ -191,8 +198,58 @@ class TacticalController:
                 best = min(best, gap / closing)
         return best, nearest
 
+    GUARD_STOPPED_KMH = 5.0
+
+    @classmethod
+    def stopped_object_ahead(cls, vehicle, lane, max_m: float) -> float:
+        """Metres along the route from the ego to the nearest stopped vehicle (< GUARD_STOPPED_KMH) or static
+        object (warning triangle) in ``lane`` and the lanes with its index further along the route; inf if none
+        within max_m. An object up to one car length behind the ego still counts, so a change back is not started
+        beside it. Objects come from the ego's lidar and are placed by the lane they are in, as MetaDrive's IDM
+        places them, but over any number of road segments (IDM looks one segment ahead)."""
+        from .sim import RoutePath
+        path = RoutePath(vehicle.engine.current_map.road_network, vehicle.navigation.checkpoints, lane.index[-1])
+        here = next((k for k, l in enumerate(path.lanes) if l is lane), None)
+        if here is None:
+            return float("inf")
+        ego_s = path.starts[here] + lane.local_coordinates(vehicle.position)[0]
+        nearest = float("inf")
+        for obj in vehicle.lidar.get_surrounding_objects(vehicle, radius=int(max_m) + 10):
+            obj_lane = getattr(obj, "lane", None)
+            if obj is vehicle or obj_lane is None:
+                continue
+            if not isinstance(obj, TrafficObject) and getattr(obj, "speed_km_h", 0.0) >= cls.GUARD_STOPPED_KMH:
+                continue
+            k = next((k for k, l in enumerate(path.lanes) if l is obj_lane), None)
+            if k is None:
+                continue
+            ahead = path.starts[k] + obj_lane.local_coordinates(obj.position)[0] - ego_s
+            if -vehicle.LENGTH < ahead < max_m:
+                nearest = min(nearest, ahead)
+        return nearest
+
+    def guard(self, vehicle, command: float) -> float:
+        """lc_guard_m: the command, or "keep" if it would start a change into a lane blocked nearer than the
+        ego's own (see __init__)."""
+        navigation = vehicle.navigation
+        current, refs = navigation.current_lane, navigation.current_ref_lanes
+        direction = 1 if command > self.threshold else -1 if command < -self.threshold else 0     # +1 = left
+        self.guarding = False
+        if direction == 0 or current not in refs:
+            return command
+        goal = refs.index(current) - direction
+        if not 0 <= goal < len(refs):
+            return command
+        if (self.stopped_object_ahead(vehicle, refs[goal], self.lc_guard_m)
+                < self.stopped_object_ahead(vehicle, current, self.lc_guard_m)):
+            self.guarding = True
+            return KEEP
+        return command
+
     def low_level(self, vehicle, action) -> np.ndarray:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
+        if self.lc_guard_m is not None:
+            action[0] = self.guard(vehicle, action[0])
         if self.debounce:
             raw = 1 if action[0] > self.threshold else -1 if action[0] < -self.threshold else 0
             self.pending_steps = self.pending_steps + 1 if raw == self.pending else 1

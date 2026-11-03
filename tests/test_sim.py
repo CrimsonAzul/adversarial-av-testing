@@ -399,3 +399,43 @@ def test_emergency_braking_stops_short_of_the_triangle(env):
         outcomes[name] = info["outcome"] if term or trunc else "still driving"
     assert outcomes["without"] == "collision"
     assert outcomes["with"] in ("stuck", "still driving")          # it stopped and stays stopped: no collision
+
+
+def test_event_objects_report_their_scripted_speed(env):
+    """A background car that clips the warning triangle left it in place but reporting up to 45 km/h, which the
+    braking layer and IDM-based drivers read (LOG.md, 2026-11-03): after every step the triangle reports 0 and
+    the stopped car its scripted speed, whatever the physics gave them."""
+    env.load(scene("obstacle", event_lane=0.0, event_ahead=0.5, traffic_density=0.0))
+    env.reset()
+    em = env.engine.managers["event_manager"]
+    where = np.asarray(em.warning.position)
+    for obj in (em.warning, em.npc):
+        obj.set_velocity([1.0, 0.0], 10.0)                     # as a clipping car leaves them
+    env.step([0.0, 0.0])
+    assert em.warning.speed_km_h == 0.0 and em.npc.speed_km_h < 0.1
+    assert np.allclose(em.warning.position, where)
+
+
+def test_lane_change_guard_keeps_out_of_the_obstacle_lane(env):
+    """lc_guard_m: commanded at full lock towards the lane of an obstacle 52 m ahead, the car moves into it and
+    ends behind it without the guard; with it, it stays in its lane until it is past, then changes."""
+    from avtest.tactical import LEFT, AEB_CONTROLLER, TacticalController
+    seen = {}
+    for name, extra in (("without", {}), ("with", {"lc_guard_m": 70.0})):
+        env.load(scene("obstacle", event_lane=0.5, event_ahead=0.1, traffic_density=0.0, lane_num=0.0))
+        env.reset()
+        em = env.engine.managers["event_manager"]
+        start = env.agent.lane_index[2]
+        assert em.path.lanes[0].index[-1] == start - 1           # the obstacle is in the lane to the left
+        controller = TacticalController(**{**AEB_CONTROLLER, **extra})
+        entered_before, passed = False, False
+        for _ in range(400):
+            ahead = em.s - em.ego_path.project(env.agent.position)
+            _, _, term, trunc, info = env.step(controller.low_level(env.agent, [LEFT, 0.5]))
+            entered_before |= ahead > 0 and env.agent.lane_index[2] == start - 1
+            passed |= ahead < -10
+            if term or trunc:
+                break
+        seen[name] = (entered_before, passed, env.agent.lane_index[2])
+    assert seen["without"][0] and not seen["without"][1]           # moved in ahead of it and never got past
+    assert seen["with"] == (False, True, start - 1)                # kept out until past, then changed left

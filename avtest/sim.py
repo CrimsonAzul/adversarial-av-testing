@@ -156,7 +156,7 @@ class EventManager(BaseManager):
         self.reset_state()
 
     def reset_state(self):
-        self.npc, self.path, self.target_path, self.ego_path = None, None, None, None
+        self.npc, self.warning, self.path, self.target_path, self.ego_path = None, None, None, None, None
         self.s, self.speed, self.trigger_speed, self.blend = 0.0, 0.0, 0.0, 0.0
         self.phase, self.phase_t, self.triggered_at = "idle", 0.0, None
 
@@ -192,6 +192,7 @@ class EventManager(BaseManager):
             # episode reported ~5 km/h here, and IDM-based drivers (references, traffic, the imitation teacher)
             # read that speed, so results depended on what the worker ran before (LOG.md, 2026-11-02)
             warning.set_velocity([math.cos(heading), math.sin(heading)], 0.0)
+            self.warning = warning
         else:
             self.phase = "escort"
             self.s = ego_s + self.values["event_ahead_m"]
@@ -259,17 +260,27 @@ class EventManager(BaseManager):
         the vehicle's navigation module. Vehicles owned by this manager are not stepped by the
         traffic manager, so without this their lane stays at the spawn point and IDM-based
         drivers (references and background traffic) cannot see them.
+
+        Also resets the reported velocities of the event objects: a background car that clips the
+        warning triangle leaves it in place but reporting up to 45 km/h (13 of 239 obstacle scenes),
+        which the emergency-braking layer and IDM-based drivers read (LOG.md, 2026-11-03).
         """
         if self.npc is not None:
             self.npc.after_step()
+            heading = self.npc.heading_theta
+            self.npc.set_velocity([math.cos(heading), math.sin(heading)], self.speed)
+        if self.warning is not None:
+            heading = self.warning.heading_theta
+            self.warning.set_velocity([math.cos(heading), math.sin(heading)], 0.0)
         return {}
 
 
 # Background traffic at 50-60 km/h on the 60 km/h road (drivers.TrafficIDMPolicy), from 2026-11-03 for every
 # driver: the road, not the driver, sets the traffic. Results logged before that date used MetaDrive's 30 km/h
-# traffic; ENV_TAG marks result files made with the current environment.
+# traffic; ENV_TAG marks result files made with the current environment. v2 (2026-11-03): event objects report
+# their scripted speed after every step (EventManager.after_step).
 ROAD_TRAFFIC = True
-ENV_TAG = "traffic50-60"
+ENV_TAG = "traffic50-60-v2"
 
 
 class RoadTrafficManager(PGTrafficManager):

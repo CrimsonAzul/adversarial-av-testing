@@ -99,7 +99,8 @@ def main() -> None:
     for item in args.settings.split(","):
         base, *extras = item.split("+")                 # e.g. 0.5:off+smooth=0.5+debounce=3
         first, second = base.split(":")
-        extra = {k: float(v) if k in ("smooth", "aeb_ttc") else int(v) for k, v in (e.split("=") for e in extras)}
+        extra = {k: float(v) if k in ("smooth", "aeb_ttc", "lc_guard_m") else int(v)
+                 for k, v in (e.split("=") for e in extras)}
         settings.append((item, None, False, second, {}) if first in ("teacher", "driver")
                         else (item, float(first), second == "on", None, extra))
     # results are appended as they arrive, so an interrupted comparison continues where it stopped
