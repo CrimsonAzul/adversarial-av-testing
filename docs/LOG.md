@@ -768,3 +768,23 @@ Its lane command is P(left) − P(right), acted on above the controller's thresh
 - **d8 almost never braked hard,** which matches its collisions without braking.
 - **d9:** `pretrain_bc --name d9 --tier T1 --controller smooth`. It is d8's setup with the binned throttle head.
 - **Tests:** 48 pass.
+
+## 2026-11-03 — d9, the binned throttle: no gain on the road
+
+The author paused d9 at 13:25 and resumed it at 13:45. It was stopped after round 3 was logged, while round 4 was collecting; `model_last.zip` matched round 3's checkpoint, so the resume was exact.
+
+| d9 round | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| T1 validation (threshold 0.5) | 48.0% | 36.0% | 77.5% | 82.5% | 77.5% | **83.0%** |
+
+**On the 499 avoidable T1 dev scenes:**
+
+| Driver, setting | Success (Wilson low) | Failures | Lead-brake / obstacle | Lane changes per scene |
+|---|---|---|---|---|
+| d8 round 5, threshold 0.3 | 90.4% (0.875) | 45 collisions, 3 off-road | 237/260, 214/239 | 1.42 |
+| d9, threshold 0.5 | 86.8% (0.835) | 62 collisions, 4 off-road | 232/260, 201/239 | 0.85 |
+| d9, threshold 0.3 | 89.0% (0.859) | 54 collisions, 1 off-road | 241/260, 203/239 | 1.57 |
+
+- **No gain on the road.** The 9-level throttle brakes hard far more often offline (42% against 0.6% recall), but collisions on the dev panel did not fall.
+- **Six students in a row** (d5–d9, two output types, three throttle/lane variants) land at 87–91% at 60 km/h. The teacher reaches 98.0%, and at 20 km/h d3 reached 97.4% after two rounds.
+- **The decision rule stated before d9 applies:** if it did not clearly break 93%, change approach.
