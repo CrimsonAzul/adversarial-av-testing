@@ -41,6 +41,9 @@ SMOOTH_CONTROLLER = {**SUT_CONTROLLER, "smooth": 0.5}
 # d10 on: trained and driven with the emergency-braking layer and the 0.3 lane threshold that suited d8/d9;
 # d9 + this layer at 2.5 s reached 94.4% on the T1 dev panel with 1.4% crashes (LOG.md, 2026-11-03)
 AEB_CONTROLLER = {**SMOOTH_CONTROLLER, "threshold": 0.3, "aeb_ttc": 2.5}
+# d11 on: AEB_CONTROLLER plus the lane-change guard and speed-scaled steering along the route; d10 driven with it
+# reached 97.6% on the T1 dev panel with no off-road (LOG.md, 2026-11-03)
+GUARD_CONTROLLER = {**AEB_CONTROLLER, "lc_guard_m": 70.0, "route_steer": True, "steer_ref_kmh": 40.0}
 CONTROLLER_ENTRY = "avtest_controller.json"
 
 

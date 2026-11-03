@@ -160,9 +160,11 @@ def main() -> None:
     p.add_argument("--throttle-head", default="bins", choices=("bins", "regress"),
                    help="classify head only: throttle/brake as the most likely of avtest.policy.THROTTLE_BINS "
                         "(d9 on) or regressed as one value (d8)")
-    p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "hold"),
-                   help="60 km/h teacher only: lane-relative commands (d4 on) or the hold_lane controller, which "
-                        "made the teacher itself worse (96.4% vs 98.0% on T1; LOG.md, 2026-11-03)")
+    p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "guard", "hold"),
+                   help="60 km/h teacher only: lane-relative commands (d4 on), with throttle smoothing, with the "
+                        "emergency-braking layer (d10), plus the lane-change guard and speed-scaled route steering "
+                        "(guard, d11); or the hold_lane controller, which made the teacher itself worse (96.4% vs "
+                        "98.0% on T1; LOG.md, 2026-11-03)")
     p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
                    help="loss weight of lane-change samples (d2-d6: 10; d7: 3)")
     p.add_argument("--tier", default=TIER, choices=("T1", "T2"),
@@ -179,7 +181,8 @@ def main() -> None:
         controller = tactical.LEGACY_CONTROLLER
     else:
         controller = {"hold": tactical.HOLD_CONTROLLER, "smooth": tactical.SMOOTH_CONTROLLER,
-                      "aeb": tactical.AEB_CONTROLLER, "level": tactical.SUT_CONTROLLER}[args.controller]
+                      "aeb": tactical.AEB_CONTROLLER, "guard": tactical.GUARD_CONTROLLER,
+                      "level": tactical.SUT_CONTROLLER}[args.controller]
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else "_pilot" if args.pilot else ""))
     panel = progress.VAL_PANEL
     if args.check:
