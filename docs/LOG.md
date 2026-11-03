@@ -544,3 +544,23 @@ The author paused d4 after round 2 and resumed it at 01:31. Round 3 had been tra
 **Tests:** 40 pass.
 
 **Next:** the teacher and the references in the new traffic on the 500 T1 dev scenes (running), then d5 if the teacher improves.
+
+## 2026-11-03 (night) — the 60 km/h teacher's overtaking, made scene-based; d5 on T1
+
+All results below are on the 500 attempt-1 T1 scenes, in 50–60 km/h traffic (`traffic50-60` files). 499 of the scenes are avoidable at 60 km/h.
+
+| 60 km/h teacher | Success (Wilson low) | Lead-brake | Obstacle | Lane changes per scene | Mean speed |
+|---|---|---|---|---|---|
+| passing static objects, plus MetaDrive's overtaking | 98.6% (0.971) | 257/260 | 235/239 | 1.22 | 42 km/h |
+| passing static objects only, otherwise following | 79.4% (0.756) | 167/260 (57 stuck, 42 timeouts) | 229/239 | 0.14 | 27 km/h |
+| **passing static, stopped (< 5 km/h) or much slower (< 40 km/h) objects, otherwise following** | **98.6% (0.971)** | 258/260 | 234/239 | 2.30 | 43 km/h |
+| references: `idm_cautious60` / `idm60` / expert | 98.4% / 97.6% / 58.5% | | | 1.03 / 0.99 / 0 | |
+
+- **Why d4 wove.** I traced d4 on its most-weaving scenes: it often changed lanes while the teacher said "keep". MetaDrive's IDM overtakes any slower car whenever its own speed is more than 3 km/h below target and an internal timer has run out. Under DAgger, "its own speed" is the student's. d4 drove slower than its teacher (36 km/h average), so the teacher kept labelling "overtake".
+  - Along d4's own drive, that teacher gave 1.23 sustained "change lane" labels per scene. A teacher that only follows gave 0.17.
+- **Following alone fails.** A lead car that brakes resumes at its trigger speed (ego speed −4 to +2 m/s), which is often 0 or slow when the ego is still accelerating, and a teacher that never passes waits behind it until it is stuck or times out. So the teacher must pass by the scene.
+- **New rule (`ScenePassingTeacher60`, `FOLLOW_TRAFFIC`, `PASS_SLOWER_BY_KMH = 20`):** pass a static object, a stopped vehicle, or one at least 20 km/h slower than its 60 km/h cruise; follow all other traffic. The labels now depend on what the student can see (the other car's speed) and on no hidden timer.
+- **Cost:** 2.3 lane changes per scene. Before its trigger, the event's lead car drives at the ego's speed, so while the ego is still accelerating it looks slow and gets passed; traffic starting from rest is passed too.
+- **`STATIC_ONLY` dropped for the 60 km/h teacher** (passing stopped cars again): restricting passing to static objects had made no measurable difference.
+- **d5:** `pretrain_bc --name d5 --tier T1`. It uses this teacher and 50–60 km/h traffic, with otherwise d4's settings (6 rounds × 600 episodes, lane-change weight 10). The best round is chosen on 200 T1 validation scenes.
+- **Checks:** pipeline check passed (`tier: T1` recorded, selection on `val_t1_success`); 40 tests pass.

@@ -107,6 +107,8 @@ class ScenePassingTeacher(LabelledCautiousIDM):
 
     BLOCKED_KMH = 5.0
     STATIC_ONLY = False              # pass only static objects (warning triangles), not vehicles that have stopped
+    FOLLOW_TRAFFIC = False           # overtake only by the scene: stopped, static, or much slower than NORMAL_SPEED
+    PASS_SLOWER_BY_KMH = 20.0        # with FOLLOW_TRAFFIC: pass a vehicle at least this much slower than our cruise
 
     def move_to_next_road(self):
         """On a new road, follow the lane that continues the current one. MetaDrive takes the first connected
@@ -127,7 +129,9 @@ class ScenePassingTeacher(LabelledCautiousIDM):
                                                              self.control_object.position, self.MAX_LONG_DIST, lanes)
             blocker = near.front_object()
             static = isinstance(blocker, TrafficObject)
-            if blocker is not None and blocker.speed_km_h < self.BLOCKED_KMH and (static or not self.STATIC_ONLY):
+            slow = (self.FOLLOW_TRAFFIC and blocker is not None
+                    and blocker.speed_km_h < self.NORMAL_SPEED - self.PASS_SLOWER_BY_KMH)
+            if blocker is not None and (blocker.speed_km_h < self.BLOCKED_KMH or slow) and (static or not self.STATIC_ONLY):
                 index = lanes.index(self.routing_target_lane)
                 for step, exists, front, back, ahead in (
                         (-1, near.left_lane_exist(), near.front_dist[0], near.back_dist[0], near.front_objs[0]),
@@ -137,6 +141,9 @@ class ScenePassingTeacher(LabelledCautiousIDM):
                     if clear:
                         self.target_speed = self.NORMAL_SPEED
                         return ahead, front, lanes[index + step]
+            if self.FOLLOW_TRAFFIC:                    # no discretionary overtaking: keep the lane behind it
+                self.target_speed = self.NORMAL_SPEED
+                return near.front_object(), near.front_min_distance(), self.routing_target_lane
         return super().lane_change_policy(all_objects)
 
 
@@ -149,9 +156,13 @@ class ScenePassingTeacher60(ScenePassingTeacher, CautiousRoadIDMPolicy):
     DISTANCE_WANTED = CautiousRoadIDMPolicy.DISTANCE_WANTED
     TIME_WANTED = CautiousRoadIDMPolicy.TIME_WANTED
     MAX_LONG_DIST = CautiousRoadIDMPolicy.MAX_LONG_DIST
-    # passing a lead car that braked to a stop cost 5 of 261 lead-brake scenes at 60 km/h against the cautious
-    # reference, which waits behind it; the obstacle event always shows a warning triangle (LOG.md, 2026-11-02)
-    STATIC_ONLY = True
+    # MetaDrive's IDM also overtakes any slower car whenever its own speed is 3 km/h below target. Under DAgger that
+    # is the student's speed: d4, slower than its teacher, got "overtake" labels and changed lanes 4.4 times per
+    # scene, often while the teacher said keep (LOG.md, 2026-11-03). The 60 km/h teacher passes only by the scene:
+    # a static object, a stopped vehicle, or one at least PASS_SLOWER_BY_KMH slower than its cruise; it follows
+    # other traffic. Never passing moving vehicles left it stuck behind leads that resume slowly (79% on T1), and
+    # passing only static objects made no measurable difference (LOG.md, 2026-11-02/03), so stopped cars count.
+    FOLLOW_TRAFFIC = True
 
 
 TEACHERS = {"cautious_idm": LabelledCautiousIDM, "scene_passing": ScenePassingTeacher,
