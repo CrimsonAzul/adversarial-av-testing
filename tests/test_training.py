@@ -141,3 +141,20 @@ def test_an_imitation_run_may_only_add_rounds():
     assert pretrain_bc.same_run(base, dict(base)) and pretrain_bc.same_run(base, {**base, "rounds": 9})
     assert not pretrain_bc.same_run(base, {**base, "rounds": 3})
     assert not pretrain_bc.same_run(base, {**base, "tier": "T2"})
+
+
+
+def test_binned_throttle_learns_hard_braking(tmp_path):
+    """d9 throttle head: the most likely of THROTTLE_BINS; a rule with rare hard braking is learned."""
+    from avtest.policy import THROTTLE_BINS, TacticalModel, fit_classify, load_policy, throttle_classes
+    assert throttle_classes(np.array([-1.0, -0.6, 0.02, 0.97])).tolist() == [0, 1, 4, 8]
+    rng = np.random.default_rng(1)
+    obs = rng.random((4000, 10)).astype(np.float32)
+    throttle = np.where(obs[:, 0] > 0.92, -1.0, 0.7)                   # 8% hard braking, else steady throttle
+    act = np.stack([np.zeros(len(obs)), throttle], 1).astype(np.float32)
+    model = TacticalModel(10, (32, 32), throttle_bins=THROTTLE_BINS)
+    stats = fit_classify(model, obs, act, epochs=400, seed=0)
+    assert stats["hard_brake_recall"] > 0.9 and stats["throttle_mae"] < 0.1
+    model.save(tmp_path / "m.zip")
+    again = load_policy(tmp_path / "m.zip")
+    assert again.throttle_bins == THROTTLE_BINS and again.predict(obs[0])[0][1] in THROTTLE_BINS

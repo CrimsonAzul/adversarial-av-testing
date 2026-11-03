@@ -157,6 +157,9 @@ def main() -> None:
     p.add_argument("--head", default="classify", choices=("classify", "mean"),
                    help="classify: avtest.policy.TacticalModel, lane decision as a 3-way class (d8 on); "
                         "mean: the PPO actor's mean regressed onto the labels (d2-d7)")
+    p.add_argument("--throttle-head", default="bins", choices=("bins", "regress"),
+                   help="classify head only: throttle/brake as the most likely of avtest.policy.THROTTLE_BINS "
+                        "(d9 on) or regressed as one value (d8)")
     p.add_argument("--controller", default="level", choices=("level", "smooth", "hold"),
                    help="60 km/h teacher only: lane-relative commands (d4 on) or the hold_lane controller, which "
                         "made the teacher itself worse (96.4% vs 98.0% on T1; LOG.md, 2026-11-03)")
@@ -188,7 +191,8 @@ def main() -> None:
     settings = {"rounds": args.rounds, "episodes": args.episodes, "epochs": args.epochs, "keep_every": KEEP_EVERY,
                 "tier": args.tier, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
                 "drop_teacher_failures": True, "val_panel": panel, "controller": controller,
-                "action": "tactical", "lane_change_weight": args.lane_change_weight, "head": args.head}
+                "action": "tactical", "lane_change_weight": args.lane_change_weight, "head": args.head,
+                "throttle_head": args.throttle_head if args.head == "classify" else None}
     if (out / "bc_config.json").exists() and not same_run(read_json(out / "bc_config.json"), settings):
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -199,12 +203,13 @@ def main() -> None:
         observation_space = gym.spaces.Box(-0.0, 1.0, (OBS_DIM,), np.float32)
         action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
 
-    from avtest.policy import TacticalModel, fit_classify, load_policy
+    from avtest.policy import THROTTLE_BINS, TacticalModel, fit_classify, load_policy
     if done_rounds:
         model = load_policy(out / "model_last.zip")
         print(f"resuming after round {done_rounds[-1]}", flush=True)
     elif args.head == "classify":
-        model = TacticalModel(OBS_DIM, tuple(DEFAULTS["net"]), seed=DEFAULTS["seed"])
+        model = TacticalModel(OBS_DIM, tuple(DEFAULTS["net"]), seed=DEFAULTS["seed"],
+                              throttle_bins=THROTTLE_BINS if args.throttle_head == "bins" else None)
     else:
         model = PPO("MlpPolicy", Spaces(), n_steps=DEFAULTS["n_steps"], batch_size=DEFAULTS["batch_size"],
                     n_epochs=DEFAULTS["n_epochs"], learning_rate=DEFAULTS["learning_rate"], gamma=DEFAULTS["gamma"],

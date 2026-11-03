@@ -24,7 +24,16 @@ import torch
 from torch import nn
 
 LANE_VALUES = (1.0, 0.0, -1.0)          # class 0 left, 1 keep, 2 right (avtest.tactical LEFT, KEEP, RIGHT)
+# Throttle/brake levels for a classified longitudinal action (d9 on), placed where the 60 km/h teacher's commands
+# lie: 6.7% are hard braking near -1 (d8's data, 820k samples). d8 regressed throttle as one number, and 16 of
+# its 18 reproduced collisions on the T1 dev panel came without braking (LOG.md, 2026-11-03).
+THROTTLE_BINS = (-1.0, -0.7, -0.35, -0.12, 0.0, 0.12, 0.35, 0.7, 1.0)
 POLICY_ENTRY, META_ENTRY = "tactical_policy.pt", "tactical_meta.json"
+
+
+def throttle_classes(values: np.ndarray, bins=THROTTLE_BINS) -> np.ndarray:
+    """Teacher throttle/brake labels as the index of the nearest level."""
+    return np.abs(np.asarray(values)[:, None] - np.asarray(bins)[None, :]).argmin(1)
 
 
 def lane_classes(commands: np.ndarray) -> np.ndarray:
@@ -34,27 +43,32 @@ def lane_classes(commands: np.ndarray) -> np.ndarray:
 
 
 class TacticalNet(nn.Module):
-    def __init__(self, obs_dim: int, hidden: tuple = (256, 256)):
+    """Lane logits, and throttle as a value in [-1, 1] (d8) or as logits over throttle_bins (d9 on)."""
+
+    def __init__(self, obs_dim: int, hidden: tuple = (256, 256), throttle_bins: tuple | None = None):
         super().__init__()
+        self.binned = throttle_bins is not None
         layers, width = [], obs_dim
         for size in hidden:
             layers += [nn.Linear(width, size), nn.Tanh()]
             width = size
         self.trunk = nn.Sequential(*layers)
         self.lane = nn.Linear(width, 3)
-        self.throttle = nn.Linear(width, 1)
+        self.throttle = nn.Linear(width, len(throttle_bins) if self.binned else 1)
 
     def forward(self, x):
         z = self.trunk(x)
-        return self.lane(z), torch.tanh(self.throttle(z)).squeeze(-1)
+        throttle = self.throttle(z)
+        return self.lane(z), throttle if self.binned else torch.tanh(throttle).squeeze(-1)
 
 
 class TacticalModel:
-    def __init__(self, obs_dim: int, hidden: tuple = (256, 256), seed: int = 0):
+    def __init__(self, obs_dim: int, hidden: tuple = (256, 256), seed: int = 0, throttle_bins: tuple | None = None):
         import gymnasium as gym
         torch.manual_seed(seed)
         self.obs_dim, self.hidden = int(obs_dim), tuple(hidden)
-        self.net = TacticalNet(self.obs_dim, self.hidden)
+        self.throttle_bins = tuple(throttle_bins) if throttle_bins is not None else None
+        self.net = TacticalNet(self.obs_dim, self.hidden, self.throttle_bins)
         self.observation_space = gym.spaces.Box(0.0, 1.0, (self.obs_dim,), np.float32)
 
     def predict(self, obs, deterministic: bool = True):
@@ -64,13 +78,20 @@ class TacticalModel:
         with torch.no_grad():
             logits, throttle = self.net(torch.as_tensor(np.asarray(obs, dtype=np.float32)).reshape(1, -1))
             p = torch.softmax(logits, -1)[0]
-        return np.array([float(p[0] - p[2]), float(throttle)], dtype=np.float32), None
+        return np.array([float(p[0] - p[2]), self.throttle_value(throttle)[0]], dtype=np.float32), None
+
+    def throttle_value(self, throttle) -> np.ndarray:
+        """Throttle/brake commands from the network output: the most likely level, or the regressed value."""
+        if self.throttle_bins is None:
+            return throttle.reshape(-1).numpy()
+        return np.asarray(self.throttle_bins, dtype=np.float32)[throttle.argmax(-1).numpy()]
 
     def save(self, path) -> None:
         buffer = io.BytesIO()
         torch.save(self.net.state_dict(), buffer)
         with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr(META_ENTRY, json.dumps({"obs_dim": self.obs_dim, "hidden": list(self.hidden)}))
+            archive.writestr(META_ENTRY, json.dumps({"obs_dim": self.obs_dim, "hidden": list(self.hidden),
+                                                     "throttle_bins": self.throttle_bins}))
             archive.writestr(POLICY_ENTRY, buffer.getvalue())
 
     @classmethod
@@ -78,7 +99,7 @@ class TacticalModel:
         with zipfile.ZipFile(path) as archive:
             meta = json.loads(archive.read(META_ENTRY))
             state = torch.load(io.BytesIO(archive.read(POLICY_ENTRY)), map_location="cpu", weights_only=True)
-        model = cls(meta["obs_dim"], tuple(meta["hidden"]))
+        model = cls(meta["obs_dim"], tuple(meta["hidden"]), throttle_bins=meta.get("throttle_bins"))
         model.net.load_state_dict(state)
         return model
 
@@ -97,10 +118,14 @@ def load_policy(path):
 
 
 def fit_classify(model: TacticalModel, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int) -> dict:
-    """Cross-entropy on the lane class plus mean-squared error on throttle/brake, over all data so far."""
+    """Cross-entropy on the lane class, plus cross-entropy on the throttle level (binned) or mean-squared
+    error on the throttle value, over all data so far."""
     gen = torch.Generator().manual_seed(seed)
     classes = torch.as_tensor(lane_classes(act[:, 0]))
-    throttle = torch.as_tensor(act[:, 1].astype(np.float32))
+    if model.throttle_bins is not None:
+        throttle = torch.as_tensor(throttle_classes(act[:, 1], model.throttle_bins))
+    else:
+        throttle = torch.as_tensor(act[:, 1].astype(np.float32))
     optimizer = torch.optim.Adam(model.net.parameters(), lr=1e-3)
     for _ in range(epochs):
         order = torch.randperm(len(act), generator=gen)
@@ -108,7 +133,11 @@ def fit_classify(model: TacticalModel, obs: np.ndarray, act: np.ndarray, epochs:
         for i in range(0, len(order), 512):
             idx = order[i:i + 512]
             logits, predicted = model.net(torch.as_tensor(obs[idx.numpy()].astype(np.float32)))
-            loss = nn.functional.cross_entropy(logits, classes[idx]) + ((predicted - throttle[idx]) ** 2).mean()
+            if model.throttle_bins is not None:
+                throttle_loss = nn.functional.cross_entropy(predicted, throttle[idx])
+            else:
+                throttle_loss = ((predicted - throttle[idx]) ** 2).mean()
+            loss = nn.functional.cross_entropy(logits, classes[idx]) + throttle_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -122,7 +151,11 @@ def lane_metrics(model: TacticalModel, obs: np.ndarray, act: np.ndarray) -> dict
         logits, throttle = model.net(torch.as_tensor(obs.astype(np.float32)))
     chosen, truth = logits.argmax(-1).numpy(), lane_classes(act[:, 0])
     changes = truth != 1
+    pedal = model.throttle_value(throttle)
+    hard_brake = act[:, 1] <= -0.5
     return {"lane_command_agreement": float(np.mean(chosen == truth)),
             "lane_change_recall": float(np.mean(chosen[changes] == truth[changes])) if changes.any() else None,
             "false_lane_changes": float(np.mean((chosen != 1) & ~changes)),
-            "action_mae": float(np.mean(np.abs(np.stack([np.take(LANE_VALUES, chosen), throttle.numpy()], 1) - act)))}
+            "throttle_mae": float(np.mean(np.abs(pedal - act[:, 1]))),
+            "hard_brake_recall": float(np.mean(pedal[hard_brake] <= -0.5)) if hard_brake.any() else None,
+            "action_mae": float(np.mean(np.abs(np.stack([np.take(LANE_VALUES, chosen), pedal], 1) - act)))}

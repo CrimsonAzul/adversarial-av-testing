@@ -752,3 +752,19 @@ Its lane command is P(left) − P(right), acted on above the controller's thresh
   - Hard braking is rare in the teacher's data, so regressing throttle and brake as one averaged number pulls it toward zero, as happened with the lane decision.
   - Throttle smoothing may add some lag; d6's test showed no measurable cost.
 - **Next candidate:** classify the longitudinal action as well, over a few levels (hard brake, brake, coast, accelerate).
+
+## 2026-11-03 — throttle and brake as a classification too (d9)
+
+- **Data:** the teacher's throttle labels in d8's data (820k samples) span the whole range. 6.7% are at or near full braking, and 24% are braking of any strength.
+- **New `TacticalModel(throttle_bins=THROTTLE_BINS)`:** throttle/brake becomes the most likely of 9 levels (−1, −0.7, −0.35, −0.12, 0, 0.12, 0.35, 0.7, 1), trained with cross-entropy. It is the default of `pretrain_bc --throttle-head bins`; d8's regression remains as `--throttle-head regress`. Test added.
+
+**Offline check on d8's data** (rounds 0–8 for training, round 9 for testing, 10.7% hard-brake labels):
+
+| Throttle head | Hard-brake recall | Throttle error | Lane agreement | False lane changes |
+|---|---|---|---|---|
+| Regressed (d8) | **0.6%** | 0.349 | 90.7% | 4.3% |
+| 9 levels (d9) | **42.4%** | 0.272 | 91.6% | 2.2% |
+
+- **d8 almost never braked hard,** which matches its collisions without braking.
+- **d9:** `pretrain_bc --name d9 --tier T1 --controller smooth`. It is d8's setup with the binned throttle head.
+- **Tests:** 48 pass.
