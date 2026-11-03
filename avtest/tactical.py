@@ -109,6 +109,7 @@ class ScenePassingTeacher(LabelledCautiousIDM):
     STATIC_ONLY = False              # pass only static objects (warning triangles), not vehicles that have stopped
     FOLLOW_TRAFFIC = False           # overtake only by the scene: stopped, static, or much slower than NORMAL_SPEED
     PASS_SLOWER_BY_KMH = 20.0        # with FOLLOW_TRAFFIC: pass a vehicle at least this much slower than our cruise
+    CLOSING_KMH = 10.0               # ... and at least this much slower than we are (we are closing in on it)
 
     def move_to_next_road(self):
         """On a new road, follow the lane that continues the current one. MetaDrive takes the first connected
@@ -130,7 +131,8 @@ class ScenePassingTeacher(LabelledCautiousIDM):
             blocker = near.front_object()
             static = isinstance(blocker, TrafficObject)
             slow = (self.FOLLOW_TRAFFIC and blocker is not None
-                    and blocker.speed_km_h < self.NORMAL_SPEED - self.PASS_SLOWER_BY_KMH)
+                    and blocker.speed_km_h < self.NORMAL_SPEED - self.PASS_SLOWER_BY_KMH
+                    and blocker.speed_km_h < self.control_object.speed_km_h - self.CLOSING_KMH)
             if blocker is not None and (blocker.speed_km_h < self.BLOCKED_KMH or slow) and (static or not self.STATIC_ONLY):
                 index = lanes.index(self.routing_target_lane)
                 for step, exists, front, back, ahead in (
@@ -159,9 +161,11 @@ class ScenePassingTeacher60(ScenePassingTeacher, CautiousRoadIDMPolicy):
     # MetaDrive's IDM also overtakes any slower car whenever its own speed is 3 km/h below target. Under DAgger that
     # is the student's speed: d4, slower than its teacher, got "overtake" labels and changed lanes 4.4 times per
     # scene, often while the teacher said keep (LOG.md, 2026-11-03). The 60 km/h teacher passes only by the scene:
-    # a static object, a stopped vehicle, or one at least PASS_SLOWER_BY_KMH slower than its cruise; it follows
-    # other traffic. Never passing moving vehicles left it stuck behind leads that resume slowly (79% on T1), and
-    # passing only static objects made no measurable difference (LOG.md, 2026-11-02/03), so stopped cars count.
+    # a static object, a stopped vehicle, or one it is closing in on that is at least PASS_SLOWER_BY_KMH below its
+    # cruise; it follows other traffic. Never passing moving vehicles left it stuck behind leads that resume slowly
+    # (79% on T1), and passing only static objects made no measurable difference, so stopped cars count. Without
+    # the closing condition it also passed the lead car before its trigger, which drives at the ego's own speed:
+    # d5 asked for lane changes on up to 92% of steps in lead-brake scenes (LOG.md, 2026-11-03).
     FOLLOW_TRAFFIC = True
 
 

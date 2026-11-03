@@ -42,6 +42,13 @@ def _init(model: str):
     _worker["env"], _worker["sut"] = AVTestEnv(sensor_config(sut.obs_size)), sut
 
 
+def controller_settings(base: dict, threshold: float, commit: bool) -> dict:
+    """The driver's own controller with only threshold and commit replaced. Building it from these two alone
+    dropped the 60 km/h generation's lateral cap: d4 and d5 were first evaluated with steering that leaves the
+    road at 60 km/h (LOG.md, 2026-11-03)."""
+    return {**base, "threshold": threshold, "commit": commit}
+
+
 def run(task: dict) -> dict:
     from avtest import scenario as sc, seeds
     from avtest import drivers
@@ -53,7 +60,8 @@ def run(task: dict) -> dict:
         driver = TeacherDriver(task["teacher"])
     else:
         driver = _worker["sut"]
-        driver.controller = TacticalController(threshold=task["threshold"], commit=task["commit"])
+        driver.controller = TacticalController(**controller_settings(driver.controller_settings, task["threshold"],
+                                                                     task["commit"]))
     env.load(sc.decode(np.asarray(task["theta"]), seeds.check(task["map_seed"], "qual"), task["tier"]))
     obs, info = env.reset()
     driver.start(env)

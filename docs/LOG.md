@@ -564,3 +564,40 @@ All results below are on the 500 attempt-1 T1 scenes, in 50–60 km/h traffic (`
 - **`STATIC_ONLY` dropped for the 60 km/h teacher** (passing stopped cars again): restricting passing to static objects had made no measurable difference.
 - **d5:** `pretrain_bc --name d5 --tier T1`. It uses this teacher and 50–60 km/h traffic, with otherwise d4's settings (6 rounds × 600 episodes, lane-change weight 10). The best round is chosen on 200 T1 validation scenes.
 - **Checks:** pipeline check passed (`tier: T1` recorded, selection on `val_t1_success`); 40 tests pass.
+
+## 2026-11-03 (early morning) — d5, an evaluation bug, and a teacher that passes only when closing in
+
+**d5** (`--tier T1`, the teacher passing anything under 40 km/h, 50–60 km/h traffic) reached its best T1 validation, 87.5% of 200 scenes, at round 5.
+
+| d5 round | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| T1 val | 70.0% | 85.5% | 84.5% | 71.0% | 86.0% | **87.5%** |
+
+**Bug in my evaluation script, fixed.**
+
+- `evaluate_controller` built the SUT's controller from threshold and commit alone, which dropped the 60 km/h generation's 1 m lateral cap. d4 and d5 were first evaluated with steering that leaves the road at 60 km/h. d5 scored 73.3% that way, against 87.5% in training validation, which uses the driver's own controller; that disagreement exposed the bug.
+- Now only threshold and commit are replaced (`controller_settings`), and a test was added. The wrong result files are kept with the suffix `.uncapped_bug`.
+- d4's dev result (87.0%, 4.4 lane changes) came from the buggy script. My separate trace of d4's weaving used the correct controller, so that weaving is real.
+
+**d5 with the correct controller:** 444/499 avoidable scenes (89.0%, Wilson low 0.859), 49 collisions, but 10.6 lane changes per scene, against its teacher's 2.3.
+
+- Lead-brake scenes: its lane command passes ±0.5 on 43–92% of steps, and the car rides along lane lines.
+- Obstacle scenes: 27%, median |command| 0.07.
+- **Cause:** before its trigger, the lead car drives at the ego's speed, and 60% of lead-brake events trigger before 10 s, while the ego is still accelerating. "Pass anything under 40 km/h" therefore said "pass" while the ego was slow and "keep" once it was fast. To the student these are the same situation: a car ahead at its own speed.
+- 16.5% of d5's training samples were lane-change labels.
+
+**Network size is not the bottleneck** (`capacity_test.py` in the session scratchpad). Fitting on d5's rounds 0–4 and testing on round 5:
+
+| Network | Lane-command error | Lane-label agreement | False lane changes |
+|---|---|---|---|
+| 256 × 256 | 0.307 | 78.3% | 17.2% |
+| 512 × 512 | 0.296 | 79.8% | 16.2% |
+| 512 × 512 × 512 | 0.279 | 77.3% | 18.8% |
+
+**Teacher, closing condition added (`CLOSING_KMH = 10`):** pass a moving vehicle only if it is under 40 km/h *and* at least 10 km/h slower than the ego.
+
+- The lead car before its trigger never qualifies, because it drives at the ego's own speed.
+- A lead that brakes to a stop is passed by the stopped-vehicle rule during its 2 s hold.
+- On the 500 T1 dev scenes: **489/499 (98.0%, Wilson low 0.964)**, 1.6% crashes, **1.08 lane changes per scene** (lead-brake 1.33, obstacle 0.81), 2 stuck.
+
+**Next:** d6, the same as d5 with this teacher.

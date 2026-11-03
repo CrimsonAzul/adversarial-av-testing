@@ -131,3 +131,11 @@ def test_search_refuses_a_changed_sut(tmp_path):
     model.write_bytes(b"retrained")
     with pytest.raises(SystemExit, match="does not match"):
         qualified_sut(tmp_path)
+
+
+def test_controller_comparison_keeps_the_drivers_other_settings():
+    from scripts.evaluate_controller import controller_settings
+    from avtest.tactical import LEGACY_CONTROLLER, SUT_CONTROLLER
+    assert controller_settings(SUT_CONTROLLER, 0.25, True) == {**SUT_CONTROLLER, "threshold": 0.25, "commit": True}
+    assert controller_settings(SUT_CONTROLLER, 0.5, False)["lat_cap"] == 1.0
+    assert controller_settings(LEGACY_CONTROLLER, 0.5, False) == LEGACY_CONTROLLER
