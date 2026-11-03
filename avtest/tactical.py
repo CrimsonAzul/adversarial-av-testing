@@ -38,6 +38,9 @@ LEGACY_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": None}
 HOLD_CONTROLLER = {"threshold": THRESHOLD, "commit": False, "lat_cap": 1.0, "hold_lane": True}
 # SUT_CONTROLLER with throttle smoothing: 42% less throttle change per step at d6's success (LOG.md, 2026-11-03)
 SMOOTH_CONTROLLER = {**SUT_CONTROLLER, "smooth": 0.5}
+# d10 on: trained and driven with the emergency-braking layer and the 0.3 lane threshold that suited d8/d9;
+# d9 + this layer at 2.5 s reached 94.4% on the T1 dev panel with 1.4% crashes (LOG.md, 2026-11-03)
+AEB_CONTROLLER = {**SMOOTH_CONTROLLER, "threshold": 0.3, "aeb_ttc": 2.5}
 CONTROLLER_ENTRY = "avtest_controller.json"
 
 
