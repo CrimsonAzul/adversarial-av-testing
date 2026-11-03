@@ -722,3 +722,15 @@ Its lane command is P(left) − P(right), acted on above the controller's thresh
 - **Still far from the 98% gate.** d8 was still improving at round 5, so more DAgger rounds are the cheapest next step.
 
 **Tests:** 46 pass.
+
+## 2026-11-03 — d8 extended to round 9
+
+`pretrain_bc --name d8 --tier T1 --controller smooth --rounds 9`. A run may now add rounds (`same_run`: every other setting must match; test added). It resumed from round 5's network, which was also its best round. Round 5's `bc_done.json` and `model_best_bc.zip` are kept as `*_after_round5.json` and `model_best_bc_round5.zip`.
+
+| d8 round | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|
+| T1 validation (200 scenes, threshold 0.5) | 79.0% | 76.0% | **90.5%** | 81.0% | 90.0% |
+| T1 collisions | 40 | 45 | 18 | 35 | 18 |
+
+- **Best is round 7,** now `model_best_bc.zip`. At the trained threshold of 0.5, rounds 7 and 9 halve round 5's collisions.
+- **Not yet done:** the dev-panel test at threshold 0.3, which lifted round 5 from 83.0% to 90.4%. The author will run it later.
