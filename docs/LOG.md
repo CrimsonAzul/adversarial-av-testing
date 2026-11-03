@@ -864,3 +864,47 @@ The best round, 3, is `model_best_bc.zip`; it records `AEB_CONTROLLER`, so evalu
 **Next:** trace d10's 24 remaining failures (17 stuck, 4 off-road, 3 collisions) before choosing the next change.
 
 **Tests:** 49 pass (no test changed; the viewer flag was checked headless, as above).
+
+## 2026-11-03 — d10's 24 failures, traced; a second way the triangle gets a speed
+
+**Method** (`trace_d10.py`, session scratchpad): each failing scene is replayed with d10's driver and controller. Every step logs:
+- speed, lane and lateral offset;
+- the network's lane command and throttle, and the throttle after the controller;
+- the braking layer's time to collision and gap;
+- the teacher's labels for the same state, as DAgger collects them;
+- the event object's distance and the nearest car in each adjacent lane.
+
+20 of the 24 reproduce. The other 4 (rows 58, 96, 298, 400) succeed on replay, so they are borderline scenes.
+
+| Cause | Failures | Rows |
+|---|---|---|
+| Moved into the obstacle's lane 14–51 m before it. Right after it crossed, the teacher's label said "go back". The braking layer stopped it and it never got out | 10 stuck | 36, 118, 119, 158, 312, 337, 345, 392, 412, 457 |
+| The lead car braked to a standstill 13 m ahead while the ego was still starting. The ego pulled out at 1–3 km/h and ended straddling the line, its nose beside the lead's tail; the braking layer holds it | 3 stuck | 34, 134, 302 |
+| A background car swerving round the obstacle stopped across the lane line 6 m in front | 1 stuck | 176 |
+| The warning triangle reported 36 km/h while standing still (bug, below), so the braking layer acted too late | 1 collision | 6 |
+| Cut back in front of the recovering lead car on a 36 m curve; the scripted lead, faster, hit it from behind | 1 collision | 196 |
+| Side contact with a background car on a 35 m curve, with nothing in its path | 1 collision | 90 |
+| Yellow centre line: a one-step steering spike (−0.61) at a curve-to-straight block boundary | 1 off-road | 190 |
+| Yellow centre line: a second lane change towards the leftmost lane, against the teacher, then hard braking into a 60 m curve | 1 off-road | 267 |
+| Yellow centre line: braked late and hard in a curve (46 to 6 km/h in 0.7 s), after ignoring the teacher's brake label for 1.2 s | 1 off-road | 318 |
+
+**Why the car stays stuck (all 14).**
+- It stops 3–5 m behind the object, then creeps. The braking layer brakes whenever the time to collision drops under 2.5 s, and holds the brake once the gap is under 1.5 m. MetaDrive has no reverse (`enable_reverse=False`), so the car cannot back away.
+- In 10 of the 11 obstacle cases, the network and the teacher both say "change lane" for the last 10 s, and the adjacent lane is free.
+- At walking pace, with the 1 m lateral cap, the car gains about 0.2 m sideways in 4 m of creeping. The planner asks for the right move; from there the car cannot execute it.
+
+**The planner's share.** 17 of the 28 lane changes in these scenes started without the teacher's agreement: its label pointed the same way on fewer than half the steps of the command.
+
+- When the network committed to the move into the obstacle's lane, the stopped car was 24–66 m ahead in the target lane, visible to the 100 m lidar.
+
+**Bug: a speed on a triangle that does not move.** When a background car clips the warning triangle, the triangle stays where it is but reports a velocity, up to 45 km/h.
+- **Extent:** 13 of the 239 obstacle scenes (5.4%) are affected, with reported speeds of 3–45 km/h. In all of them the triangle moved 0.00 m. The same happens in a fresh process. The fix of 2026-11-02 only zeroed the velocity at spawn, against recycling.
+- **Who reads it:** the braking layer, and the IDM-based drivers: the teacher (so its labels in those scenes), the references and background traffic.
+- **Row 6:** at 25 m and 38 km/h, the braking layer computed a time to collision of 16 s, because the triangle seemed to drive away at 32 km/h. It braked only at 4 m.
+
+**Next (proposal):**
+1. **Fix the triangle:** reset its velocity every step in `EventManager`. This affects every driver, so the references and the teacher are re-measured on the dev panel.
+2. **A lane-change guard in the controller,** the counterpart of the braking layer. It would not start a lane change into a lane whose path holds a stopped or static object within about 70 m, unless the current lane is blocked nearer. This targets the 10 obstacle-stuck scenes. Like the braking layer on d9, it is measured first on d10 as it is, then put in the training loop.
+3. **If cars still end up stopped close behind obstacles:** allow full steering, without the 1 m lateral cap, below walking pace.
+
+No code changed in this entry.
