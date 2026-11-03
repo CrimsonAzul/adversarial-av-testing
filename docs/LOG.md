@@ -648,3 +648,33 @@ All results below are on the 500 attempt-1 T1 scenes, in 50–60 km/h traffic (`
 - Not the cause, each measured: network size (capacity test), traffic speed (d5), the training tier (d5–d7 on T1), overtaking labels that depend on the student's own speed (fixed in the teacher), and the lane-change weight (d6 vs d7).
 - **Next proposal:** learn the lane decision as a classification (left/keep/right, cross-entropy, act on the most likely class), with throttle and brake regressed as now. This replaces the policy's lane output, so it needs its own network, about 2–3 h of work plus training.
 - No qualification attempt was spent: every driver tonight was clearly below the gate on the development scenes.
+
+## 2026-11-03 — "it vibrates a lot": what it is, and smoothing
+
+The author watched d6 in the 3D viewer: it vibrates.
+
+**Measured on 12 T1 scenes, d6 against its teacher:**
+
+| | d6 | Teacher | Ratio |
+|---|---|---|---|
+| Steering change per step | 0.081 | 0.030 | 2.7× |
+| Throttle change per step | 0.084 | 0.039 | 2.2× |
+| Lane switches per second | 0.22 | 0.04 | 6× |
+| Standard deviation of the lateral offset | 0.68 m | 0.27 m | 2.5× |
+
+The vibration is mainly side-to-side wobble: the lane command crossing ±0.5 makes the steering target jump. Noisy throttle and brake add to it.
+
+**Controller options added** (`TacticalController(smooth=, debounce=)`, off by default; `evaluate_controller` settings such as `0.5:off+smooth=0.5`, and it now also reports steering and throttle change per step). d6 on the 499 avoidable T1 dev scenes:
+
+| Setting | Success | Lane changes per scene | Steering change per step | Throttle change per step |
+|---|---|---|---|---|
+| As trained (repeat; first run 91.6%) | 90.4% | 5.70 | 0.073 | 0.077 |
+| Throttle smoothing 0.5 | 90.6% | 5.76 | 0.073 | **0.045** |
+| Lane debounce 3 steps | 82.2% | 3.72 | 0.047 | 0.075 |
+| Both | 82.4% | 3.64 | 0.047 | 0.045 |
+
+- **Throttle smoothing: free.** 42% less change per step, at the same success. Adopted for viewing: `runs/driver/d6/model_best_bc_smooth.zip` is d6 with `smooth: 0.5` recorded in the file, so the viewer and evaluations use it.
+- **Lane debounce: rejected.** It cuts the wobble by about a third, but collisions double, because lane decisions come too late.
+- **Conclusion:** the wobble needs the classification-based lane decision; smoothing cannot remove it safely.
+
+**Tests:** 44 pass.

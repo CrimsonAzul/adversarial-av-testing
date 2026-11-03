@@ -61,21 +61,25 @@ def run(task: dict) -> dict:
     else:
         driver = _worker["sut"]
         driver.controller = TacticalController(**controller_settings(driver.controller_settings, task["threshold"],
-                                                                     task["commit"]))
+                                                                     task["commit"]), **task.get("extra", {}))
     env.load(sc.decode(np.asarray(task["theta"]), seeds.check(task["map_seed"], "qual"), task["tier"]))
     obs, info = env.reset()
     driver.start(env)
-    lane, changes, speeds = env.agent.lane_index, 0, []
+    lane, changes, speeds, actions = env.agent.lane_index, 0, [], []
     while True:
-        obs, _, terminated, truncated, info = env.step(driver.act(env, obs))
+        action = driver.act(env, obs)
+        obs, _, terminated, truncated, info = env.step(action)
         speeds.append(env.agent.speed_km_h)
+        actions.append(np.asarray(action, dtype=float))
         now = env.agent.lane_index
         changes += now[:2] == lane[:2] and now[2] != lane[2]           # same road, different lane
         lane = now
         if terminated or truncated:
             break
     return {"setting": task["setting"], "row": task["row"], "outcome": info["outcome"], "lane_changes": changes,
-            "mean_kmh": float(np.mean(speeds)), "max_kmh": float(np.max(speeds))}
+            "mean_kmh": float(np.mean(speeds)), "max_kmh": float(np.max(speeds)),
+            "steer_jerk": float(np.mean(np.abs(np.diff([a[0] for a in actions])))) if len(actions) > 1 else 0.0,
+            "throttle_jerk": float(np.mean(np.abs(np.diff([a[1] for a in actions])))) if len(actions) > 1 else 0.0}
 
 
 def main() -> None:
@@ -93,8 +97,11 @@ def main() -> None:
     solvable = {i for i, r in enumerate(rows) if any(ref["outcome"] == "success" for ref in r["references"])}
     settings = []
     for item in args.settings.split(","):
-        first, second = item.split(":")
-        settings.append((item, None, False, second) if first in ("teacher", "driver") else (item, float(first), second == "on", None))
+        base, *extras = item.split("+")                 # e.g. 0.5:off+smooth=0.5+debounce=3
+        first, second = base.split(":")
+        extra = {k: float(v) if k == "smooth" else int(v) for k, v in (e.split("=") for e in extras)}
+        settings.append((item, None, False, second, {}) if first in ("teacher", "driver")
+                        else (item, float(first), second == "on", None, extra))
     # results are appended as they arrive, so an interrupted comparison continues where it stopped
     model_hash = sha256_file(args.model)
     from avtest.sim import ENV_TAG, ROAD_TRAFFIC
@@ -106,9 +113,9 @@ def main() -> None:
     if any(r["model_sha256"] != model_hash for r in previous):
         raise SystemExit(f"{out} holds results of another model; move it away first")
     done = {(r["setting"], r["row"]) for r in previous}
-    tasks = [{"setting": name, "threshold": threshold, "commit": commit, "teacher": teacher, "row": i,
+    tasks = [{"setting": name, "threshold": threshold, "commit": commit, "teacher": teacher, "extra": extra, "row": i,
               "theta": r["theta"], "map_seed": r["map_seed"], "tier": args.tier}
-             for name, threshold, commit, teacher in settings for i, r in enumerate(rows) if (name, i) not in done]
+             for name, threshold, commit, teacher, extra in settings for i, r in enumerate(rows) if (name, i) not in done]
     print(f"{len(rows)} scenes, {len(solvable)} solvable by a reference (attempt {args.attempt}); "
           f"{len(tasks)} episodes to run, {len(done)} already in {out}", flush=True)
     if tasks:
@@ -130,7 +137,9 @@ def main() -> None:
               f"collision/off-road {crashes / len(mine):.1%}  {dict(Counter(r['outcome'] for r in mine))}  "
               f"by event {by_event}  lane changes/episode {np.mean([r['lane_changes'] for r in mine]):.2f}"
               + (f"  speed mean {np.mean([r['mean_kmh'] for r in mine]):.0f} km/h, top {np.mean([r['max_kmh'] for r in mine]):.0f}"
-                 if all("mean_kmh" in r for r in mine) else ""))
+                 if all("mean_kmh" in r for r in mine) else "")
+              + (f"  steering change/step {np.mean([r['steer_jerk'] for r in mine]):.3f}, throttle {np.mean([r['throttle_jerk'] for r in mine]):.3f}"
+                 if all("steer_jerk" in r for r in mine) else ""))
 
 
 if __name__ == "__main__":

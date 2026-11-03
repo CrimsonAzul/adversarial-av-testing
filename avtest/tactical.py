@@ -77,8 +77,12 @@ class TacticalController:
     changes per scene against its teacher's 1.1 (LOG.md, 2026-11-03)."""
 
     def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None,
-                 hold_lane: bool = False):
+                 hold_lane: bool = False, smooth: float | None = None, debounce: int = 0):
+        """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
+        direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
+        Both against d6's visible vibration (LOG.md, 2026-11-03); off by default."""
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
+        self.smooth, self.debounce = smooth, debounce
         self.reset()
 
     def reset(self):
@@ -86,6 +90,7 @@ class TacticalController:
         self.lateral_pid = PIDController(0.3, .002, 0.05)
         self.committed = None           # (direction, lane index) of a committed change under way
         self.home, self.goal, self.last_direction = None, None, 0       # hold_lane state
+        self.throttle, self.pending, self.pending_steps, self.effective = 0.0, 0, 0, 0   # smooth / debounce state
 
     def target_lane(self, vehicle, command: float):
         navigation = vehicle.navigation
@@ -136,6 +141,15 @@ class TacticalController:
 
     def low_level(self, vehicle, action) -> np.ndarray:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
+        if self.debounce:
+            raw = 1 if action[0] > self.threshold else -1 if action[0] < -self.threshold else 0
+            self.pending_steps = self.pending_steps + 1 if raw == self.pending else 1
+            self.pending = raw
+            if self.pending_steps >= self.debounce:
+                self.effective = raw
+            action[0] = float(self.effective)
+        if self.smooth is not None:
+            self.throttle = action[1] = self.smooth * self.throttle + (1 - self.smooth) * action[1]
         lane = self.target_lane(vehicle, action[0])
         long, lat = lane.local_coordinates(vehicle.position)
         if self.lat_cap is not None:

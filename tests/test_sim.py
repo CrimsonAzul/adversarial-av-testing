@@ -363,3 +363,20 @@ def test_hold_lane_controller():
     assert c.target_lane(car, 0.0) == "M" and c.target_lane(car, -0.8) == "R"
     c.reset()
     assert c.home is None and c.goal is None
+
+
+def test_controller_smoothing_and_debounce():
+    from types import SimpleNamespace
+    import numpy as np
+    from avtest.tactical import TacticalController
+    lanes = SimpleNamespace(heading_theta_at=lambda s: 0.0, local_coordinates=lambda p: (0.0, 0.0))
+    nav = SimpleNamespace(current_lane=lanes, current_ref_lanes=[lanes])
+    car = SimpleNamespace(navigation=nav, position=(0, 0), heading_theta=0.0)
+    c = TacticalController(smooth=0.5)
+    assert c.low_level(car, [0.0, 1.0])[1] == 0.5 and c.low_level(car, [0.0, 1.0])[1] == 0.75
+    seen = []
+    c = TacticalController(debounce=3)
+    c.target_lane = lambda vehicle, command: seen.append(command) or lanes
+    for command in (0.9, 0.9, 0.0, 0.9, 0.9, 0.9, 0.9):
+        c.low_level(car, [command, 0.0])
+    assert seen == [0, 0, 0, 0, 0, 1, 1]                       # a flicker is ignored; 3 steps in a row apply
