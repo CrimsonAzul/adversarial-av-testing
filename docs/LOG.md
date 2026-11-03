@@ -837,7 +837,7 @@ The best round, 3, is `model_best_bc.zip`; it records `AEB_CONTROLLER`, so evalu
 - **Training with the layer helped where it was meant to:** obstacle scenes rose from 215 to 225 of 239; stuck behind a static obstacle fell from 21 to 12.
 - **Overall, the gain is small:** 4 scenes, about the run-to-run variation (d6 scored 91.6% and 90.4% on two runs of the same panel). Lead-brake fell from 256 to 250: 5 newly stuck behind a stopped lead car, 3 off-road. The two drivers mostly fail on different scenes: 7 failures in common, 17 only for d10, 21 only for d9 + braking.
 - **Smoother:** 1.30 lane changes per scene against 1.86, steering change per step 0.036 against 0.041.
-- **Still short of the gate.** On 499 scenes the gate allows at most 10 failures (489/499 = 98.0%, Wilson low 0.964); d10 has 24, its teacher 10. No qualification attempt.
+- **Still short of the gate.** On 499 scenes the gate allows at most 9 failures (490/499; corrected later the same day, the first version said 10); d10 has 24, its teacher 10. No qualification attempt.
 
 **d4 re-measured with the corrected script.** Its only 500-scene result (87.0%) came from the uncapped-steering bug. Correct: 444/499, **89.0%** (Wilson low 0.859), 54 collisions, 1 off-road, 2.24 lane changes per scene. It was trained in 30 km/h traffic and is measured in today's 50–60 km/h traffic, like every 60 km/h row below.
 
@@ -931,7 +931,7 @@ No code changed in this entry.
 
 - **The fix changed little for the reference drivers.** The same 499 scenes are avoidable, and `idm60`, `idm_cautious60` and the teacher keep their success counts. d10 alone moved from 95.2% to 94.4%: 4 scenes, about the run-to-run variation.
 - **The guard is the largest single gain since the braking layer.** It removes 18 of d10's 28 failures, including 14 of its 21 stuck. It adds 4 new ones. It stays within the 2% crash limit, and the car changes lanes as often as its teacher (1.08 against 1.09 per scene).
-- **Gate:** 485/499 against the 489 needed (98.0%, Wilson low 0.964 at 489). 4 scenes short. The 2% crash limit is met.
+- **Gate:** 485/499 against the 490 needed (corrected later the same day, the first version said 489). 5 scenes short. The 2% crash limit is met.
 
 **The guard's 4 new failures, replayed:**
 - **Row 233:** succeeds on replay, and the guard never acted (borderline).
@@ -973,7 +973,7 @@ No code changed in this entry.
 
 - **The false positive cost d10 alone 8 scenes:** the fix resolves 13 failures, mostly stuck, and adds 5. Several of the stuck cases traced earlier were stops for a car in the next lane.
 - **With the guard, the fix is worth 1 scene:** it resolves 4 failures (including row 272) and adds 3. The guard had already kept the car out of most of those situations.
-- **Gate:** 486/499 against the 489 needed. 3 scenes short. Crash rate 1.2%, within the 2% limit.
+- **Gate:** 486/499 against the 490 needed (corrected later the same day, the first version said 489). 4 scenes short. Crash rate 1.2%, within the 2% limit.
 
 **The 13 remaining failures of d10 + guard:**
 - **Stuck (7):** rows 32, 34, 58, 112, 134, 176, 302. Rows 34, 134 and 302 are the lead-brake cases where the car pulled out at walking pace and ended straddling the line beside the stopped lead; 176 is the background car stopped across the line.
@@ -985,3 +985,62 @@ No code changed in this entry.
 **Next (proposal): d11,** d10's recipe with the guard in the DAgger loop. d10's own training with the braking layer had cut obstacle stuck from 21 to 12. With the guard in training, the student would no longer reach the blocked-lane stops at all, and would collect labels on what the guard lets it do instead.
 
 **Tests:** 52 pass.
+
+## 2026-11-03 — why d10 wiggles: two causes; speed-scaled steering along the route; gate arithmetic corrected
+
+The author saw d10 wiggle in its lane after some lane changes and turns. d10 (with guard) and its teacher drove the first 100 dev scenes through **the same controller**, every step logged (`wiggle.py`, `wiggle_score.py`, session scratchpad). The 5 s after each completed lane change and each curve exit were scored.
+
+| 5 s after… | d10 | Teacher, same controller |
+|---|---|---|
+| A curve: steering sign reversals | 13.8 | 13.2 |
+| A lane change: target lane changed again | 26% | 3% |
+| A lane change: largest overshoot past the new centre | 1.31 m | 0.50 m |
+| Quiet straight: steering reversals | 2.3 | 1.2 |
+
+**Cause 1, after curves: the controller, not the network** (the teacher wiggles equally).
+- **A target jump at curve ends.** MetaDrive moves the ego onto the next road segment only once it is about 1.2 m past the end of the curve. Until then the heading target (1 m ahead on the current lane) follows the arc's continuation. Then it jumps: on row 1 it went from +0.033 to −0.029 rad in one step, and the derivative term turned that into a +0.22 steering kick.
+- **The PID is marginally stable at speed.** The gains are MetaDrive's IDM's, whose traffic drives at about 30 km/h, and a steering input yaws the car in proportion to speed. Without the kick, the oscillation still builds from ±0.02 to ±0.1 within 4 s, at about 2.5 Hz.
+- **The integral terms wind up** and offset each other: −0.125 heading against +0.115 lateral on row 1. This is a hidden bias, not the wiggle.
+
+**Fix, both options off by default** (`TacticalController(route_steer=, steer_ref_kmh=)`):
+- `route_steer`: the lateral offset and the heading target are taken along the route (`RoutePath.local`, new `RoutePath.heading`).
+- `steer_ref_kmh`: above that speed, steering is scaled by `steer_ref_kmh / speed`.
+
+| Teacher, same 100 scenes | Original | Route steering | + scaled from 30 km/h | + scaled from 40 km/h |
+|---|---|---|---|---|
+| Steering reversals, 5 s after a curve | 13.2 | 10.0 | 0.24 | 0.54 |
+| Steering reversals, 5 s after a lane change | 2.9 | 3.1 | 0.57 | 0.85 |
+| Lane-change overshoot past centre | 0.13 m | 0.13 m | 0.17 m | 0.14 m |
+| Successes | 98 | 98 | 98 | 98 |
+
+40 km/h keeps the lane-change overshoot unchanged. With it, d10's reversals after a curve fell from 13.8 to 0.9, and on quiet straights from 2.3 to 0.2.
+
+**Cause 2, after lane changes: d10's lane command.**
+- **What happens:** once the centre has crossed into the new lane, the command hovers around the 0.3 threshold. 17 of the 24 re-targets went back towards the lane just left; 7 kept going one lane further for about 0.6 s.
+- **Why:** commands are relative to the lane the centre is in. Just before and just after the line the observation is nearly the same, while the teacher's label flips at the line. This is the root of d6's weaving, now much reduced.
+- **With the steering fix:** 18% of d10's lane changes re-target, against the teacher's 5%.
+- **Tried and dropped:** holding the new lane until within 0.5 m of its centre (at most 2 s). Re-targets went from 18% to 20% and successes from 97 to 96, because the flicker continues after the car has settled. The option was removed.
+
+**On the 499 avoidable T1 dev scenes, environment v2** (`teacher:` settings now accept controller options):
+
+| Driver | Success (Wilson low) | Failures | Lead-brake | Obstacle | Steering change per step |
+|---|---|---|---|---|---|
+| Teacher | 489/499, 97.996% (0.964) | 6 collisions, 4 off-road | 256/260 | 233/239 | 0.034 |
+| **Teacher, fixed steering** | **493/499, 98.8% (0.974)** | 6 collisions | 258/260 | 235/239 | **0.016** |
+| d10 + guard | 486/499, 97.4% (0.956) | 7 stuck, 4 off-road, 2 collisions | 250/260 | 236/239 | 0.034 |
+| **d10 + guard, fixed steering** | **487/499, 97.6% (0.958)** | 8 stuck, 4 collisions, **0 off-road** | 252/260 | 235/239 | **0.018** |
+
+- **The wiggle caused every yellow-line off-road.** The fix removes all of them for both drivers (rows 190, 241, 267, 400 for d10) and halves the steering jitter.
+- **The teacher now clears the gate on this panel** (493 against 490 needed).
+- **d10 + guard:** 5 failures fixed, 4 new (rows 220 and 426 stuck, 298 and 418 collisions). Net +1, 3 short of 490.
+
+**Correction: the gate needs 490 of 499, not 489.**
+- `qualify.gate` tests `ok / n >= 0.98` exactly, and 489/499 is 97.996%: it printed as "98.0%" in an earlier table.
+- Three earlier lines of this log are corrected in place: the d10 trace entry, the v2 guard entry and the braking-geometry entry.
+- The teacher's earlier 489/499 is therefore just below the success rule on this panel.
+
+**What a gate attempt can expect** (exact binomial for this gate on 500 fresh scenes): a driver whose true rate is 97.4% passes with probability about 16%, one at 98.0% about 58%, one at 99.0% about 99%. A qualification attempt needs a driver estimated about a point above 98%, which d10 + guard is not.
+
+**Next, for tonight (author's plan): d11** with the braking layer, the guard and the fixed steering in the DAgger loop.
+
+**Tests:** 53 pass. New: `test_steering_settles_after_a_curve_at_55_kmh`. On a curve-curve-straight road at 55 km/h, the steering flips 19 and 23 times in the 5 s after the two curve exits with the old controller, and 4 and 3 with the fix, closer to the lane centre.

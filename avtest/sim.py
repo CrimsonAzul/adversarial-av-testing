@@ -126,6 +126,12 @@ class RoutePath:
         i = int(np.searchsorted(self.starts, s, side="right") - 1)
         return np.asarray(self.lanes[i].position(s - self.starts[i], 0.0))
 
+    def heading(self, s: float) -> float:
+        """Direction of the path at arc length s (clamped to the path)."""
+        s = min(max(s, 0.0), self.length - 1e-6)
+        i = int(np.searchsorted(self.starts, s, side="right") - 1)
+        return float(self.lanes[i].heading_theta_at(s - self.starts[i]))
+
     def project(self, position) -> float:
         """Arc length of the closest point (searches every lane; routes are short)."""
         return self.local(position)[0]

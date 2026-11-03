@@ -58,6 +58,7 @@ def run(task: dict) -> dict:
         driver = getattr(drivers, REFERENCE_DRIVERS[task["teacher"]])()
     elif task["teacher"]:
         driver = TeacherDriver(task["teacher"])
+        driver.controller_settings = {**driver.controller_settings, **task.get("extra", {})}   # e.g. +route_steer=1
     else:
         driver = _worker["sut"]
         driver.controller = TacticalController(**controller_settings(driver.controller_settings, task["threshold"],
@@ -99,9 +100,9 @@ def main() -> None:
     for item in args.settings.split(","):
         base, *extras = item.split("+")                 # e.g. 0.5:off+smooth=0.5+debounce=3
         first, second = base.split(":")
-        extra = {k: float(v) if k in ("smooth", "aeb_ttc", "lc_guard_m") else int(v)
-                 for k, v in (e.split("=") for e in extras)}
-        settings.append((item, None, False, second, {}) if first in ("teacher", "driver")
+        extra = {k: float(v) if k in ("smooth", "aeb_ttc", "lc_guard_m", "steer_ref_kmh") else int(v)
+                 for k, v in (e.split("=") for e in extras)}            # route_steer=1
+        settings.append((item, None, False, second, extra) if first in ("teacher", "driver")
                         else (item, float(first), second == "on", None, extra))
     # results are appended as they arrive, so an interrupted comparison continues where it stopped
     model_hash = sha256_file(args.model)

@@ -94,14 +94,15 @@ class TacticalController:
 
     def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None,
                  hold_lane: bool = False, smooth: float | None = None, debounce: int = 0,
-                 aeb_ttc: float | None = None, lc_guard_m: float | None = None):
+                 aeb_ttc: float | None = None, lc_guard_m: float | None = None, route_steer: bool = False,
+                 steer_ref_kmh: float | None = None):
         """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
         direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
         Both against d6's visible vibration (LOG.md, 2026-11-03); off by default.
 
         ``aeb_ttc``: an emergency-braking layer, as in production cars, independent of the learned planner. For
         every detected object (vehicles and warning triangles, from the ego's lidar) that overlaps the ego's
-        path, measured along its current lane so curves are handled, it computes the time to collision; below
+        path, measured along its route so curves are handled, it computes the time to collision; below
         aeb_ttc seconds, or with anything closer than AEB_HOLD_GAP_M in its path, it brakes fully. Steering and
         lane choice stay with the planner. (A first version also braked half below twice aeb_ttc: braking and
         the planner's throttle then alternated every step and the car crept into the obstacle.) Six 60 km/h students plateaued at 87-91% on T1, and most of their collisions came without any
@@ -111,9 +112,20 @@ class TacticalController:
         change is replaced by "keep" while the target lane holds a stopped vehicle or a static object within this
         many metres ahead (``stopped_object_ahead``), unless the ego's own lane is blocked nearer. In 10 of
         d10's 24 failures on the T1 dev panel it moved into the obstacle's lane 14-51 m before the obstacle,
-        against the teacher's label, and was then held behind it by the braking layer (LOG.md, 2026-11-03)."""
+        against the teacher's label, and was then held behind it by the braking layer (LOG.md, 2026-11-03).
+
+        ``route_steer``: the steering's lateral offset and its heading target (1 m ahead) are taken along the
+        route in the target lane (sim.RoutePath) instead of on the current road segment. MetaDrive moves the ego
+        onto the next segment only after it has passed the end of the current one, so at a curve's end the target
+        followed the arc's continuation and then jumped by about twice the arc's curvature: a steering kick
+        (+0.22) and a lightly damped 2 Hz wobble for 2-3 s after every curve (LOG.md, 2026-11-03).
+
+        ``steer_ref_kmh``: above this speed the steering is scaled by steer_ref_kmh / speed. The PID gains are
+        MetaDrive's IDM's, whose traffic drives at about 30 km/h; the yaw a steering input produces grows with
+        speed, and at 45-60 km/h the loop oscillates at about 2.5 Hz (LOG.md, 2026-11-03)."""
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
         self.smooth, self.debounce, self.aeb_ttc, self.lc_guard_m = smooth, debounce, aeb_ttc, lc_guard_m
+        self.route_steer, self.steer_ref_kmh = route_steer, steer_ref_kmh
         self.reset()
 
     def reset(self):
@@ -123,6 +135,7 @@ class TacticalController:
         self.home, self.goal, self.last_direction = None, None, 0       # hold_lane state
         self.throttle, self.pending, self.pending_steps, self.effective = 0.0, 0, 0, 0   # smooth / debounce state
         self.guarding = False           # lc_guard_m: the last command was replaced by "keep"
+        self.routes = {}                # route_steer: RoutePath per lane index, for this episode's route
 
     def target_lane(self, vehicle, command: float):
         navigation = vehicle.navigation
@@ -270,12 +283,24 @@ class TacticalController:
             if ttc < self.aeb_ttc or gap < self.AEB_HOLD_GAP_M:
                 action[1] = -1.0                       # brake fully; hold it while something is right ahead
             self.last_ttc, self.last_gap = ttc, gap
-        lane = self.target_lane(vehicle, action[0])
+        lane = self.last_target = self.target_lane(vehicle, action[0])
         long, lat = lane.local_coordinates(vehicle.position)
+        target_heading = lane.heading_theta_at(long + 1)
+        if self.route_steer:
+            from .sim import RoutePath
+            key = (id(vehicle.engine.current_map), lane.index[-1])
+            if key not in self.routes:
+                self.routes[key] = RoutePath(vehicle.engine.current_map.road_network, vehicle.navigation.checkpoints,
+                                             lane.index[-1])
+            s, route_lat = self.routes[key].local(vehicle.position)
+            if np.isfinite(route_lat):                 # on its route; else as before, on the current segment
+                lat, target_heading = route_lat, self.routes[key].heading(s + 1)
         if self.lat_cap is not None:
             lat = float(np.clip(lat, -self.lat_cap, self.lat_cap))
-        heading_error = -wrap_to_pi(lane.heading_theta_at(long + 1) - vehicle.heading_theta)
+        heading_error = -wrap_to_pi(target_heading - vehicle.heading_theta)
         steering = self.heading_pid.get_result(heading_error) + self.lateral_pid.get_result(-lat)
+        if self.steer_ref_kmh is not None and vehicle.speed_km_h > self.steer_ref_kmh:
+            steering *= self.steer_ref_kmh / vehicle.speed_km_h
         return np.array([np.clip(steering, -1.0, 1.0), action[1]])
 
 

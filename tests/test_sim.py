@@ -467,3 +467,38 @@ def test_braking_layer_ignores_the_outer_lane_of_a_curve(env):
             break
     assert passed and len(in_path) > 50
     assert all(gap == float("inf") for gap in in_path)
+
+
+def test_steering_settles_after_a_curve_at_55_kmh(env):
+    """MetaDrive's lane-keeping PID gains (from its ~30 km/h IDM traffic) oscillate at 45-60 km/h, set off by the
+    heading target's jump at a curve's end (LOG.md, 2026-11-03). Lane kept at 55 km/h through two curves: the
+    steering flips sign about 20 times in the 5 s after each curve; along the route and scaled above 40 km/h,
+    only a few times, and the car stays closer to the lane centre."""
+    from avtest.tactical import KEEP, SUT_CONTROLLER, TacticalController
+    s = scene("obstacle", event_lane=0.5, event_ahead=0.9, traffic_density=0.0, lane_num=0.0,
+              block_1=0.3, block_2=0.3, block_3=0.0)
+    assert s.values["map"] == "CCS"
+    seen = {}
+    for name, extra in (("default", {}), ("fixed", {"route_steer": True, "steer_ref_kmh": 40.0})):
+        env.load(s)
+        env.reset()
+        controller = TacticalController(**SUT_CONTROLLER, **extra)
+        steer, curve, lateral = [], [], []
+        for _ in range(600):
+            action = controller.low_level(env.agent, [KEEP, 0.6 if env.agent.speed_km_h < 55 else 0.0])
+            _, _, term, trunc, info = env.step(action)
+            steer.append(float(action[0]))
+            curve.append(type(env.agent.lane).__name__ == "CircularLane")
+            lateral.append(abs(env.agent.lane.local_coordinates(env.agent.position)[1]))
+            if term or trunc:
+                break
+        assert info["outcome"] == "success"
+        exits = [i for i in range(1, len(curve)) if curve[i - 1] and not curve[i]]
+        reversals = []
+        for i in exits:
+            signs = [np.sign(x) for x in steer[i:i + 50] if abs(x) > 0.03]
+            reversals.append(sum(a != b for a, b in zip(signs, signs[1:])))
+        seen[name] = (reversals, max(lateral))
+    assert len(seen["default"][0]) == 2 and min(seen["default"][0]) >= 12
+    assert max(seen["fixed"][0]) <= 6
+    assert seen["fixed"][1] < seen["default"][1]
