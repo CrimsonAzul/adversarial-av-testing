@@ -90,12 +90,21 @@ class TacticalController:
     changes per scene against its teacher's 1.1 (LOG.md, 2026-11-03)."""
 
     def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None,
-                 hold_lane: bool = False, smooth: float | None = None, debounce: int = 0):
+                 hold_lane: bool = False, smooth: float | None = None, debounce: int = 0,
+                 aeb_ttc: float | None = None):
         """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
         direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
-        Both against d6's visible vibration (LOG.md, 2026-11-03); off by default."""
+        Both against d6's visible vibration (LOG.md, 2026-11-03); off by default.
+
+        ``aeb_ttc``: an emergency-braking layer, as in production cars, independent of the learned planner. For
+        every detected object (vehicles and warning triangles, from the ego's lidar) that overlaps the ego's
+        path, measured along its current lane so curves are handled, it computes the time to collision; below
+        aeb_ttc seconds, or with anything closer than AEB_HOLD_GAP_M in its path, it brakes fully. Steering and
+        lane choice stay with the planner. (A first version also braked half below twice aeb_ttc: braking and
+        the planner's throttle then alternated every step and the car crept into the obstacle.) Six 60 km/h students plateaued at 87-91% on T1, and most of their collisions came without any
+        braking (LOG.md, 2026-11-03)."""
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
-        self.smooth, self.debounce = smooth, debounce
+        self.smooth, self.debounce, self.aeb_ttc = smooth, debounce, aeb_ttc
         self.reset()
 
     def reset(self):
@@ -152,6 +161,33 @@ class TacticalController:
                 self.goal = (direction, goal)
         return self.goal[1] if self.goal is not None else self.home
 
+    AEB_HOLD_GAP_M = 1.5
+
+    @staticmethod
+    def time_to_collision(vehicle, lookahead_m: float = 40.0, margin_m: float = 0.3) -> tuple[float, float]:
+        """(seconds until the ego reaches the nearest detected object overlapping its path at the current
+        closing speed, bumper gap to the nearest such object), inf if none. Positions are taken along the
+        ego's current lane, so on a curve an object in the lane ahead counts and one in the next lane does not."""
+        speed = vehicle.speed_km_h / 3.6
+        lane = vehicle.lane
+        ego_long, ego_lat = lane.local_coordinates(vehicle.position)
+        heading = np.array([np.cos(vehicle.heading_theta), np.sin(vehicle.heading_theta)])
+        best, nearest = float("inf"), float("inf")
+        for obj in vehicle.lidar.get_surrounding_objects(vehicle):
+            if obj is vehicle or not hasattr(obj, "position"):
+                continue
+            long, lat = lane.local_coordinates(obj.position)
+            gap = long - ego_long - (vehicle.LENGTH + getattr(obj, "LENGTH", 1.0)) / 2
+            if not 0.0 < gap < lookahead_m:
+                continue
+            if abs(lat - ego_lat) > (vehicle.WIDTH + getattr(obj, "WIDTH", 1.0)) / 2 + margin_m:
+                continue
+            nearest = min(nearest, gap)
+            closing = speed - float(np.asarray(getattr(obj, "velocity", (0.0, 0.0)))[:2] @ heading)
+            if closing > 0.1:
+                best = min(best, gap / closing)
+        return best, nearest
+
     def low_level(self, vehicle, action) -> np.ndarray:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
         if self.debounce:
@@ -163,6 +199,11 @@ class TacticalController:
             action[0] = float(self.effective)
         if self.smooth is not None:
             self.throttle = action[1] = self.smooth * self.throttle + (1 - self.smooth) * action[1]
+        if self.aeb_ttc is not None:
+            ttc, gap = self.time_to_collision(vehicle)
+            if ttc < self.aeb_ttc or gap < self.AEB_HOLD_GAP_M:
+                action[1] = -1.0                       # brake fully; hold it while something is right ahead
+            self.last_ttc, self.last_gap = ttc, gap
         lane = self.target_lane(vehicle, action[0])
         long, lat = lane.local_coordinates(vehicle.position)
         if self.lat_cap is not None:

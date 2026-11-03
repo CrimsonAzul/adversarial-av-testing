@@ -380,3 +380,22 @@ def test_controller_smoothing_and_debounce():
     for command in (0.9, 0.9, 0.0, 0.9, 0.9, 0.9, 0.9):
         c.low_level(car, [command, 0.0])
     assert seen == [0, 0, 0, 0, 0, 1, 1]                       # a flicker is ignored; 3 steps in a row apply
+
+
+
+def test_emergency_braking_stops_short_of_the_triangle(env):
+    """aeb_ttc: lane kept at full throttle straight at a warning triangle; without the layer the car hits it,
+    with it the car stops in front of it."""
+    from avtest.tactical import KEEP, SUT_CONTROLLER, TacticalController
+    outcomes = {}
+    for name, extra in (("without", {}), ("with", {"aeb_ttc": 1.5})):
+        env.load(scene("obstacle", event_lane=0.0, event_ahead=0.3, traffic_density=0.0))
+        env.reset()
+        controller = TacticalController(**SUT_CONTROLLER, **extra)
+        for _ in range(400):
+            _, _, term, trunc, info = env.step(controller.low_level(env.agent, [KEEP, 1.0]))
+            if term or trunc:
+                break
+        outcomes[name] = info["outcome"] if term or trunc else "still driving"
+    assert outcomes["without"] == "collision"
+    assert outcomes["with"] in ("stuck", "still driving")          # it stopped and stays stopped: no collision

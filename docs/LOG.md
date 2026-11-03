@@ -788,3 +788,30 @@ The author paused d9 at 13:25 and resumed it at 13:45. It was stopped after roun
 - **No gain on the road.** The 9-level throttle brakes hard far more often offline (42% against 0.6% recall), but collisions on the dev panel did not fall.
 - **Six students in a row** (d5–d9, two output types, three throttle/lane variants) land at 87–91% at 60 km/h. The teacher reaches 98.0%, and at 20 km/h d3 reached 97.4% after two rounds.
 - **The decision rule stated before d9 applies:** if it did not clearly break 93%, change approach.
+
+## 2026-11-03 — an emergency-braking layer: crashes down to 1.4%
+
+**`TacticalController(aeb_ttc=)`:** an independent emergency-braking layer, as in production cars.
+
+- **What it watches:** every object the ego's lidar detects (vehicles and warning triangles) whose position, measured along the ego's current lane, overlaps the ego's path.
+- **When it acts:** if the time to collision is under `aeb_ttc`, or anything is closer than 1.5 m in the path, it brakes fully.
+- **What stays with the planner:** steering and lane choice.
+- **First version, discarded:** it also braked half below twice `aeb_ttc`. Braking and the planner's throttle then alternated every step, and near standstill the car crept into the triangle.
+- **Test:** driving straight at a warning triangle at full throttle, the car hits it without the layer and stops in front of it with it.
+
+**On the 499 avoidable T1 dev scenes** (threshold 0.3):
+
+| Driver + braking layer | Success (Wilson low) | Crash rate | Failures | Lead-brake | Obstacle |
+|---|---|---|---|---|---|
+| d8 round 5 alone | 90.4% (0.875) | 9.6% | 45 collisions, 3 off-road | 237/260 | 214/239 |
+| d8 + 1.5 s | 88.6% (0.855) | 2.4% | 45 stuck, 6 collisions, 6 off-road | 239/260 | 203/239 |
+| d8 + 2.5 s | 89.6% (0.866) | 1.4% | 45 stuck, 2 collisions, 5 off-road | 243/260 | 204/239 |
+| d9 alone | 89.0% (0.859) | 11.0% | 54 collisions, 1 off-road | 241/260 | 203/239 |
+| d9 + 1.5 s | 91.8% (0.890) | 2.8% | 27 stuck, 10 collisions, 4 off-road | 249/260 | 209/239 |
+| **d9 + 2.5 s** | **94.4% (0.920)** | **1.4%** | 21 stuck, 5 collisions, 2 off-road | **256/260** | 215/239 |
+
+- **d9 with braking at 2.5 s is the best 60 km/h driver so far.** Its crash rate is within the gate's 2% limit, and lead-brake scenes are nearly solved.
+- **Remaining failures are "stuck":** after an emergency stop behind a static obstacle, the planner does not pull out around it. It was trained without the layer and never saw those states, because the teacher passes long before.
+- **Next: d10**, trained with the layer in the DAgger loop. The student then reaches those stops and is labelled by the teacher, which passes a stopped or static object when the adjacent lane is clear.
+
+**Tests:** 49 pass.
