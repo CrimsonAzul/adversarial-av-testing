@@ -138,6 +138,12 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int, lane_ch
             "lane_change_recall": float(np.mean(chosen[changes] == command[: len(chosen)][changes])) if changes.any() else None}
 
 
+def same_run(previous: dict, settings: dict) -> bool:
+    """Whether a run may continue with these settings: all equal, except that more rounds may be added."""
+    rest = lambda d: {k: v for k, v in d.items() if k != "rounds"}
+    return rest(previous) == rest(settings) and settings["rounds"] >= previous["rounds"]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--name", required=True)
@@ -183,7 +189,7 @@ def main() -> None:
                 "tier": args.tier, "teacher": {"cautious_idm": "idm_cautious"}.get(args.teacher, args.teacher),   # d2's spelling
                 "drop_teacher_failures": True, "val_panel": panel, "controller": controller,
                 "action": "tactical", "lane_change_weight": args.lane_change_weight, "head": args.head}
-    if (out / "bc_config.json").exists() and read_json(out / "bc_config.json") != settings:
+    if (out / "bc_config.json").exists() and not same_run(read_json(out / "bc_config.json"), settings):
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
     log = JsonlLog(out / "bc_log.jsonl")

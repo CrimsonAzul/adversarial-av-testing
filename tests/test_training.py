@@ -134,3 +134,10 @@ def test_copy_with_controller_changes_only_the_controller(tmp_path):
     assert controller_for_model(tmp_path / "b.zip", 6) == {**SMOOTH_CONTROLLER, "threshold": 0.3}
     x = np.linspace(0, 1, 6, dtype=np.float32)
     assert np.allclose(load_policy(tmp_path / "a.zip").predict(x)[0], load_policy(tmp_path / "b.zip").predict(x)[0])
+
+
+def test_an_imitation_run_may_only_add_rounds():
+    base = {"rounds": 5, "tier": "T1", "head": "classify"}
+    assert pretrain_bc.same_run(base, dict(base)) and pretrain_bc.same_run(base, {**base, "rounds": 9})
+    assert not pretrain_bc.same_run(base, {**base, "rounds": 3})
+    assert not pretrain_bc.same_run(base, {**base, "tier": "T2"})
