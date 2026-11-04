@@ -1044,3 +1044,40 @@ The author saw d10 wiggle in its lane after some lane changes and turns. d10 (wi
 **Next, for tonight (author's plan): d11** with the braking layer, the guard and the fixed steering in the DAgger loop.
 
 **Tests:** 53 pass. New: `test_steering_settles_after_a_curve_at_55_kmh`. On a curve-curve-straight road at 55 km/h, the steering flips 19 and 23 times in the 5 s after the two curve exits with the old controller, and 4 and 3 with the fix, closer to the lane centre.
+
+## 2026-11-04 — d11, the full controller in the training loop: 490/499 on T1 dev, no crashes; a power cut survived
+
+**d11** (`pretrain_bc --name d11 --tier T1 --controller guard`): d10's recipe (same teacher, network, rounds and tier), with the whole controller in the DAgger loop: `GUARD_CONTROLLER`, i.e. braking layer, lane-change guard and speed-scaled route steering. Started 22:56.
+
+| d11 round | 0 | 1 | 2 | 3 | 4 | **5** |
+|---|---|---|---|---|---|---|
+| T1 val (200 scenes) | 71.5% | 89.0% | 90.5% | 84.5% | 97.0% | **97.5%** |
+| Stuck / off-road / collisions | 38 / 17 / 2 | 16 / 4 / 2 | 16 / 2 / 1 | 25 / 0 / 1 | 5 / 0 / 1 | 4 / 0 / 1 |
+
+Round 5 is `model_best_bc.zip` (sha256 `bc3ffcfb979a…`). The training script prints its validation as "98%"; it is 195/200.
+
+**Power cut during round 5.**
+- **State:** rounds 0–4 were finished and logged, and round 5 had written its data shard (23:56:58) and was fitting.
+- **Checked before resuming:**
+  - all six shards load completely, with values in [0, 1] and no zeroed rows (rounds 0–4: 485,653 samples, as logged);
+  - every checkpoint loads, and `model_last.zip` is byte-identical to round 4;
+  - the log has no torn line.
+- **Resumed** with the same command at 06:12. It skipped rounds 0–4 and redid round 5 from round 4's network, as an uninterrupted run would have.
+
+**On the 499 avoidable T1 dev scenes, environment v2:**
+
+| Driver | Success (Wilson 95%) | Crash rate | Failures | Lead-brake | Obstacle | Gate rule on this panel |
+|---|---|---|---|---|---|---|
+| Teacher, fixed steering | 493/499, 98.8% [0.974, 0.994] | 1.2% | 6 collisions | 258/260 | 235/239 | pass |
+| d10 + guard + fixed steering | 487/499, 97.6% [0.958, 0.986] | 0.8% | 8 stuck, 4 collisions | 252/260 | 235/239 | fail |
+| **d11** | **490/499, 98.2% [0.966, 0.990]** | **0.0%** | 8 stuck, 1 timeout | 253/260 | **237/239** | **pass, at the minimum (490)** |
+
+- **d11 is the first driver with no collision and no off-road** on the dev panel. Lane changes: 1.19 per scene; steering change per step: 0.019.
+- **Training with the full controller paid off, as with the braking layer for d10.** Driven through the same controller, d10 scores 487. d11 solves 8 of d10's 12 failures; 4 remain (rows 134, 176, 298, 302).
+- **What is left is stuck, mostly in lead-brake scenes:** 7 of the 9 failures (rows 12 as a timeout, 134, 227, 302, 406, 441, 452). Rows 134 and 302 were traced on 2026-11-03: the lead car stops 13 m ahead at the start, and the ego pulls out at walking pace and ends straddling the line beside it. The obstacle failures are 176 (a background car stopped across the line) and 298.
+- **Expected outcome of a qualification attempt.** A driver whose true rate is 98.2% passes this gate on a fresh 498-scene panel with probability about 59% (exact binomial); at 98.5%, about 78%; at 99%, about 97%. The dev estimate is probably optimistic: the braking layer, the guard and the steering were all tuned on this panel. d11 itself was chosen on the validation panel, not this one.
+- **Decision for the author:** attempt 2 with d11 now (about 1.5–2 h for all three tiers), or first remove the lead-brake stuck class for margin. The DESIGN.md deadline for qualification is 14 November.
+
+**Viewer:** `.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d11\model_best_bc.zip --tier T1`; the model records its controller.
+
+**Tests:** 53 pass.
