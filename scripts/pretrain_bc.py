@@ -1,35 +1,47 @@
-"""Warm start for the driver: imitation of a cautious-IDM teacher with DAgger, before PPO.
+"""Train a driver by imitation of a rule-based teacher with DAgger (Ross, Gordon & Bagnell 2011).
 
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2                 # ~2–2.5 h, resumable
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2 --check         # few-minute pipeline check
-    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d2 --pilot         # ~45 min learning pilot (real settings, fewer rounds)
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d11 --tier T1 --controller guard   # d11, ~1-1.5 h, resumable
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name d11 --tier T1 --controller guard --check   # few-minute pipeline check
+    .venv\\Scripts\\python.exe -m scripts.pretrain_bc --name dX --pilot          # learning pilot: 3 rounds x 240 episodes
 
-The student sees lidar, lane lines, road edges, its own state and the 4 nearest vehicles
-(avtest.sim), as PPO does. It outputs tactical decisions (lane command, throttle/brake;
-avtest.tactical), and a PID controller steers. The teacher (--teacher, avtest.tactical.TEACHERS)
-reads privileged map state; at every visited state it is labelled with the lane it steers for
-(left/keep/right of the ego's current lane) and its throttle/brake. Default ``scene_passing_60``:
-cautious IDM at 60 km/h, slowing for curves, that passes a stopped object in its lane as soon as it
-sees it (from d4). Run d3 used the same rules at 20 km/h (``scene_passing``); run d2 used plain
-cautious IDM (``cautious_idm``), whose overtaking depends on its own speed, which under DAgger is the
-student's (docs/LOG.md, 2026-11-02). The teacher drives
-through the same controller with those labels, which reproduces its own driving: 40/42 successes
-either way (docs/LOG.md, 2026-11-01).
-Round 0 lets the teacher drive. In rounds 1..R the student drives, with the teacher taking
-over with probability β = 0.5^round each episode, while the teacher still labels every state
-(DAgger; Ross, Gordon & Bagnell 2011). The policy is the PPO actor itself, trained by regressing
-its mean action onto the teacher's actions on all data so far, so scripts.train_driver continues
-with PPO from runs/driver/<name>/model_last.zip.
+Student (--head classify, the default from d8 on): avtest.policy.TacticalModel. It sees the 800 values of
+avtest.sim (720 lidar beams to 100 m, 24 lane-line and 24 road-edge beams, the 4 nearest vehicles, its own
+state) through two hidden layers of 256 (tanh) and has two heads:
+- lane: 3 classes (left / keep / right), cross-entropy. When driving, its command is P(left) - P(right) and
+  the controller changes lane above its threshold. Up to d7 (--head mean) the lane command was regressed
+  onto -1/0/+1, which averaged conflicting labels: d6 weaved, d7 hesitated (docs/LOG.md, 2026-11-03).
+- throttle/brake: the most likely of the 9 levels avtest.policy.THROTTLE_BINS, cross-entropy (from d9 on;
+  --throttle-head regress for d8's single regressed value, which almost never braked hard).
+Steering is not learned: avtest.tactical.TacticalController steers for the lane the model chooses.
 
-Training scenarios are uniform over tier T2 (docs/LOG.md, 2026-11-01). Episodes the teacher
-drove and failed are discarded, so the student never imitates a crash; student-driven
-episodes are always kept, because their labels are the teacher's corrections.
+Teacher (--teacher, avtest.tactical.TEACHERS; default ``scene_passing_60``): cautious IDM at 60 km/h that
+slows for curves and passes only by the scene: a warning triangle, a stopped vehicle (< 5 km/h), or one at
+least 20 km/h below its cruise that it is closing in on by at least 10 km/h; it follows other traffic. Its labels are the lane it steers for
+(left/keep/right of the ego's current lane, ``teacher_command``) and its throttle/brake. Run d3 used the same
+idea at 20 km/h (``scene_passing``); d2 used plain cautious IDM (``cautious_idm``), whose overtaking depends
+on its own speed, which under DAgger is the student's (docs/LOG.md, 2026-11-02).
 
-Data: every 2nd step is kept (consecutive 0.1 s frames are nearly identical) and stored as
-float16 shards under data/, one per round, so a crash resumes at the last finished round.
-After every round: validation on the fixed 200-scene panel and recordings of the three
-showcase scenarios (avtest.progress), logged to bc_log.jsonl and charted in bc_progress.png.
-At the end the round with the best validation becomes model_last.zip, PPO's starting point.
+Each round (rounds 0..--rounds, 6 by default; 600 episodes over 6 worker processes):
+1. Scenes are drawn uniformly from --tier (default T2; d5 on use T1) with training-split map seeds.
+2. Round 0: the teacher drives. Round k: the teacher drives an episode with probability 0.5^k, otherwise the
+   latest student (model_last.zip) does. Either way the teacher labels every state, so the data holds the
+   teacher's corrections from the states the student's own mistakes lead to.
+3. Whoever decides, the decision goes through the controller (--controller), as it will when the model
+   drives: from d10 the emergency-braking layer (aeb), from d11 also the lane-change guard and speed-scaled
+   steering along the route (guard). The student so trains on the states those layers create.
+4. Episodes the teacher drove and failed are dropped, so a crash is never imitated; student episodes are kept.
+   Every 2nd step is stored (0.1 s frames are nearly identical) as a float16 shard data/round_XX.npz.
+5. The model is fitted for --epochs (20) on the data of all rounds so far, saved as model_last.zip and
+   checkpoints/bc_round_XX.zip, and the controller is written into each zip (tactical.stamp_controller), so the
+   model always drives with the controller it was trained with.
+6. Validation on the fixed 200-scene panels (avtest.progress; with --tier T1 also 200 T1 scenes) and
+   recordings of three showcase scenarios, logged to bc_log.jsonl and charted in bc_progress.png.
+At the end the round with the best validation on the training tier becomes model_best_bc.zip (and
+model_last.zip). Running the same command again skips finished rounds, so an interrupted run resumes at the
+last finished round; other settings than the first run's are refused (more rounds may be added).
+
+--head mean (d2-d7) builds the Stable-Baselines3 PPO actor instead and regresses its mean action onto the
+labels (``fit``); only such a model can be fine-tuned further with PPO (scripts.train_driver).
 
 Disclosure: the teacher is (a variant of) cautious IDM, one of the three reference drivers.
 Avoidability needs any one reference to complete a scene, so this cannot make a failure look
@@ -163,8 +175,8 @@ def main() -> None:
     p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "guard", "hold"),
                    help="60 km/h teacher only: lane-relative commands (d4 on), with throttle smoothing, with the "
                         "emergency-braking layer (d10), plus the lane-change guard and speed-scaled route steering "
-                        "(guard, d11); or the hold_lane controller, which made the teacher itself worse (96.4% vs "
-                        "98.0% on T1; LOG.md, 2026-11-03)")
+                        "(guard, d11); or the hold_lane controller, which made the teacher itself worse (96.4%% vs "
+                        "98.0%% on T1; LOG.md, 2026-11-03)")
     p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
                    help="loss weight of lane-change samples (d2-d6: 10; d7: 3)")
     p.add_argument("--tier", default=TIER, choices=("T1", "T2"),
@@ -273,9 +285,10 @@ def main() -> None:
     shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_best_bc.zip")
     write_json(out / "bc_done.json", {"rounds": args.rounds, "best_round": best["round"],
                                       "best_val_success": best["val_success"], "selected_on": select, "final": rows[-1]})
-    print(f"warm start: best round {best['round']} ({select} {progress.pct(best[select])}) saved as "
-          f"{out / 'model_last.zip'}; recordings in {out / 'recordings'}; "
-          f"continue with: python -m scripts.train_driver --name {args.name}", flush=True)
+    print(f"best round {best['round']} ({select} {progress.pct(best[select])}) saved as "
+          f"{out / 'model_best_bc.zip'}; recordings in {out / 'recordings'}"
+          + (f"; PPO can continue with: python -m scripts.train_driver --name {args.name}" if args.head == "mean" else ""),
+          flush=True)
 
 
 if __name__ == "__main__":
