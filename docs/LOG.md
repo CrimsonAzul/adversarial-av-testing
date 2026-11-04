@@ -1081,3 +1081,40 @@ Round 5 is `model_best_bc.zip` (sha256 `bc3ffcfb979a…`). The training script p
 **Viewer:** `.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d11\model_best_bc.zip --tier T1`; the model records its controller.
 
 **Tests:** 53 pass.
+
+## 2026-11-04 — qualification attempt 2 started and paused; the project page rewritten, with a replay for every driver
+
+**Attempt 2 with d11, paused.** `scripts.qualify --model runs\driver\d11\model_best_bc.zip --attempt 2` was started at the author's request and paused at the author's request a few minutes later, before its first block of 20 T3 scenes finished.
+- On disk: only `runs/qualification/attempt2_T3/panel.json`, which binds attempt 2 to d11 (sha256 `bc3ffcfb979a…`) and its controller. `episodes.jsonl` has 0 rows; T2 and T1 were not started. No outcome was recorded or seen, so the panel is still unused.
+- Ctrl-C alone did not stop it: the worker pool restarted its workers after each interrupt. Closing the terminal tab ended it, and no Python process was left.
+- **To resume:** the same command. A different model needs `--attempt 3`.
+
+**`scripts.watch_driver`, new options** (test added):
+- `--row 102` or `--row 134,302`: replay scenes of the development panel (the failed attempt-1 T1 panel), the rows this log names. It refuses a panel that passed.
+- `--set threshold=0.3,aeb_ttc=2.5`: change the driver's controller settings (`none` switches a layer off), e.g. to watch one model with and without a fix.
+- `--driver teacher60`: the 60 km/h teacher through the same controller.
+- `--headless`: no window; it prints each scene's outcome, lane changes, mean speed and duration. One windowed replay (d4, row 408) gave the same outcome as headless.
+
+**The project page** (the capstone progress artifact) was rewritten: every driver from d1 to d11, its problem, its fix, and a replay that shows the problem. Every replay was re-run headless today in environment v2, with these results:
+
+| Replay | Today | Recorded |
+|---|---|---|
+| d2, row 102, `--traffic30` | collision, 0 lane changes, 14 s | collision |
+| d3, row 102, `--traffic30` | success, 1 lane change, 70 s | success |
+| d4, row 408 | collision, 4 lane changes, 16 s | collision (5 lane changes, environment v1) |
+| d5, row 201 | collision, 30 lane changes, 28 s | collision, 30 |
+| d6, row 339 | collision, 16 lane changes, 36 s | collision, 14 |
+| d7, row 142 | stuck, 22 s | stuck |
+| d8 round 5, row 28, `threshold=0.3` | collision, 24 s | collision |
+| d9, row 28, `threshold=0.3` / with `aeb_ttc=2.5` | collision / success | collision / success |
+| d9 + braking layer, row 454 / d10, row 454 | stuck / success | stuck / success |
+| d10, row 36 / d10 + guard, row 36 | stuck / success | stuck / success |
+| d10 + guard, row 267 / with fixed steering | off-road after 7 s / success | off-road / success |
+| d10 + guard + fixed steering, row 34 / d11, row 34 | stuck / success | stuck / success |
+| d11, rows 134 and 302 / teacher, row 134 | stuck, stuck / success | stuck, stuck / success |
+
+- **Two recorded failures no longer reproduce,** and were not used. d9 + braking layer on row 319 (stuck in environment v1) now succeeds, probably because the braking layer has measured along the route since 2026-11-03. d10 + guard on row 190 (off-road in v2) now succeeds. That is not explained; outcomes have varied slightly between runs before (2026-11-02). The page uses row 267 instead.
+- d1 and pilot 1 (end-to-end steering) cannot be replayed: the viewer no longer supports their sensors and actions. The page links their training recordings (`runs/driver/d1/recordings/steps_0003305472/lead_brake.gif`, off-road after 8.6 s; `runs/driver/d2_pilot1_endtoend/recordings/bc_round_02/cut_in.gif`, off-road after 26 s).
+- The ten regression tests the page cites pass.
+
+**Tests:** 54 pass.

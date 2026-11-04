@@ -143,3 +143,10 @@ def test_controller_comparison_keeps_the_drivers_other_settings():
     assert controller_settings(SUT_CONTROLLER, 0.25, True) == {**SUT_CONTROLLER, "threshold": 0.25, "commit": True}
     assert controller_settings(SUT_CONTROLLER, 0.5, False)["lat_cap"] == 1.0
     assert controller_settings(LEGACY_CONTROLLER, 0.5, False) == LEGACY_CONTROLLER
+
+
+def test_viewer_parses_controller_settings():
+    from scripts.watch_driver import parse_settings
+    assert parse_settings("threshold=0.3,aeb_ttc=none,route_steer=1,lc_guard_m=70,steer_ref_kmh=40.0") == {
+        "threshold": 0.3, "aeb_ttc": None, "route_steer": 1, "lc_guard_m": 70, "steer_ref_kmh": 40.0}
+    assert parse_settings("") == {}

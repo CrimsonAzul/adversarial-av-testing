@@ -80,12 +80,18 @@ It runs seed 101 for rl, cmaes, bo and random, then seed 202, then 303, skipping
 
 ```powershell
 # watch the AI drive in MetaDrive's 3D view: 20 random T1 scenes with a running tally (--speed 2 = twice as fast)
-.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d10\model_best_bc.zip --tier T1
-# the same scenes with a reference driver, to compare
+.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d11\model_best_bc.zip --tier T1
+# the same scenes with a reference driver or the 60 km/h teacher, to compare
 .\.venv\Scripts\python.exe -m scripts.watch_driver --driver idm60 --tier T1
+.\.venv\Scripts\python.exe -m scripts.watch_driver --driver teacher60 --tier T1
 # a 20 km/h driver (d2, d3) in the 30 km/h traffic it was measured in
 .\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d3\checkpoints\bc_round_02.zip --tier T1 --traffic30
-# every driver from worst to best, and what changed between them: docs/LOG.md, 2026-11-03, "d10"
+# replay development-panel scenes by row (the failed attempt-1 T1 panel, rows as in LOG.md), e.g. where a driver failed
+.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d11\model_best_bc.zip --row 134,302
+# the same model with controller settings changed, e.g. d9 without and with the braking layer; --headless prints outcomes only
+.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d9\model_best_bc.zip --row 28 --set threshold=0.3
+.\.venv\Scripts\python.exe -m scripts.watch_driver --model runs\driver\d9\model_best_bc.zip --row 28 --set threshold=0.3,aeb_ttc=2.5
+# every driver, its problem, its fix and a replay that shows it: LOG.md, 2026-11-04, "the project page"
 # watch a scenario (GIF in runs\inspect); --driver sut uses models\sut.zip
 .\.venv\Scripts\python.exe -m scripts.inspect_scenario --event cut_in --driver idm --seed 120005
 # how often the reference drivers solve random scenes, per tier
