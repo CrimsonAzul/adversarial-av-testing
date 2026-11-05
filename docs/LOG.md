@@ -1246,3 +1246,21 @@ The aim is d11's lane changes on T1 and d12's junctions on T3 in one driver, tra
 | on the scenes solvable in both, v2 / gap check | 98.2% / 99.1% (441) | 97.7% / 97.2% (389) |
 
 With the gap check, the teacher meets the gate's numbers on T2 but not on T3. On T3 the gap check makes no measurable difference.
+
+**d13** (`--tier all --controller yield`) finished at 11:14 (6 rounds, 1 h 50 min; teacher demonstrations dropped as failures: 22 in round 0, against d12's 152). Its best round on the mean of the three tiers' validation is round 5: T1 98.5%, T2 95%, T3 89.5% (all 200 scenes per tier). Lane-change recall on its first 20,000 training samples is 0.67 (d12: 0.41, d11: 0.73). `model_best_bc.zip` sha256 1d0b8eea5507.
+
+Attempt-1 dev panels, environment v2, its own controller (`YIELD_CONTROLLER`, threshold 0.3), success over the scenes a 60 km/h reference completes (1,500 episodes):
+
+| Driver | T1 (499) | T2 (456) | T3 (405) | Lane changes per episode, T1 / T2 / T3 | Episodes with ≥4 changes, T1 / T2 / T3 |
+|---|---|---|---|---|---|
+| teacher with `YIELD_CONTROLLER` | 99.8% | 97.4% | 96.5% | 1.08 / 1.31 / 1.19 | 19 / 21 / 17 |
+| d11 | 98.2% | 90.6% | 61.7% | 1.20 / 1.44 / 1.48 | 32 / 49 / 37 |
+| d12 + `lat_cap_kmh` + `yield_s` | 97.6% | 95.2% | 90.1% | 0.93 / 0.98 / 0.85 | 12 / 17 / 12 |
+| **d13** | **99.8%** (Wilson low 0.989; 1 off-road) | **97.8%** (0.960; 6 collisions, 2 off-road, 2 stuck) | **92.6%** (0.896; 13 collisions, 10 stuck, 7 off-road) | 1.58 / 1.98 / 1.58 | 53 / 88 / 60 |
+
+- **d13 is the best driver so far on every tier.**
+  - T1: it matches the teacher.
+  - T2: it is a little above the teacher, and short of the gate's 98% by one scene in 456 (crash rate 1.8%, within the 2% limit).
+  - T3: it is 4 points below the teacher.
+- **It changes lanes more than the teacher:** 1.6-2.0 changes per episode, and 4 or more in 11-18% of episodes. Its speed matches the teacher's (39-41 km/h on T1/T2).
+- **Next:** T3 validation was still rising (87, 88, 85, 90% over rounds 2-5), so d13 is resumed for 3 more rounds (`--rounds 8`). Its round-5 model stays in `checkpoints/bc_round_05.zip`.
