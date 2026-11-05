@@ -1184,4 +1184,18 @@ Attempt-1 dev panels, environment v2, setting `0.3:off`, success over the scenes
 - **On T3, d12 learned the junctions:** off-road falls from 88 to 4, and roundabout scenes completed rise from 43 to 77 of 113. Its crash rate on T3 (10.9%) is below the teacher's (12.1%).
 - **It gets stuck far more, on every tier.** On T1, 38 of its 41 stuck or timed-out scenes have the event (a braking lead or a warning triangle) in the ego's own lane, and d12 changed lanes 0 or 1 times. d11 completes 34 of those 41, most with one lane change.
 - **It changes lanes less:** 0.74–0.84 lane changes per episode against d11's 1.19–1.55. Its lane-change recall on its first 20,000 training samples is 0.41 at the selected round, against d11's 0.73. The training data are not short of lane changes: 13.8% of d12's labels are a change, against 12.8% of d11's. Why it fits them worse on T3 data is not yet known.
-- **Being measured** (dev panels, d12): lane threshold 0.2 and 0.1 on T1 and T3, to see whether a lower threshold unsticks it.
+
+**d12 with a lower lane threshold** (the same panels; 3,500 episodes). Lane changes and steering change per step are over all 500 episodes:
+
+| Threshold | T1 | T2 | T3 | Lane changes per episode (T1 / T3) | Episodes with ≥4 changes (T1 / T3) | Steering change per step (T1 / T3) |
+|---|---|---|---|---|---|---|
+| 0.3 | 91.8% | 86.2% | 76.8% | 0.80 / 0.70 | 9 / 10 | 0.022 / 0.024 |
+| 0.2 | 94.0% | – | 79.5% | 1.21 / 1.09 | 40 / 30 | 0.024 / 0.030 |
+| 0.1 | 97.8% (Wilson low 0.961) | 91.2% | 84.2% | 2.10 / 2.08 | 100 / 106 | 0.034 / 0.043 |
+| 0.05 | 98.8% (Wilson low 0.974; 4 collisions) | – | 82.0% (crashes 14.8%) | 3.61 / 3.64 | 210 / 202 | 0.046 / 0.058 |
+| d11 at 0.3, for comparison | 98.2% | 90.6% | 61.7% | 1.20 / 1.48 | 32 / 37 | 0.019 / 0.034 |
+
+- **A lower threshold unsticks d12.** At 0.1, its stuck and timed-out scenes fall from 41 to 10 on T1, 40 to 15 on T2, and 50 to 18 on T3. On T2 it beats d11 and the teacher (91.2% vs 90.6% and 89.7%); on T3 it is a point below the teacher (84.2% vs 85.2%).
+- **It weaves.** At 0.1, one episode in five has 4 or more lane changes, and steering changes 1.8 times as much per step as d11's on T1 (1.3 times on T3). At 0.05, T1 passes the gate's numbers, but 42% of episodes have 4 or more lane changes, and T3 gets worse (more collisions).
+- **Reading (inferred from these results, not measured step by step):** in the stuck scenes, d12's lane command points the right way but too weakly to cross 0.3. A lower threshold also lets through the brief spikes elsewhere. The cure belongs in training (lane-change recall 0.41 against d11's 0.73), not in the threshold. The controller's other filters were tried before and rejected: lane commitment turned brief spikes into full lane changes (2026-11-02), and a lane debounce made decisions late enough to double collisions (2026-11-03).
+- **Neither d11 nor d12 is ready for every tier:** d11 fails T3 (off-road at junctions), and d12 is stuck at 0.3 or weaves at 0.1. The teacher itself, at 85% on T3, caps what imitation can reach on that tier.
