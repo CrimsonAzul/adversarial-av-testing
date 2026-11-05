@@ -1264,3 +1264,47 @@ Attempt-1 dev panels, environment v2, its own controller (`YIELD_CONTROLLER`, th
   - T3: it is 4 points below the teacher.
 - **It changes lanes more than the teacher:** 1.6-2.0 changes per episode, and 4 or more in 11-18% of episodes. Its speed matches the teacher's (39-41 km/h on T1/T2).
 - **Next:** T3 validation was still rising (87, 88, 85, 90% over rounds 2-5), so d13 is resumed for 3 more rounds (`--rounds 8`). Its round-5 model stays in `checkpoints/bc_round_05.zip`.
+
+## 2026-11-05 — d13 round 7, the last rule-assisted driver; author decision: an end-to-end network
+
+**d13 resumed** (rounds 6-8, 12:36). Validation (200 scenes per tier):
+
+| Round | T1 | T2 | T3 | Lane-change recall |
+|---|---|---|---|---|
+| 6 | 98.5% | 96.0% | 84.5% | 0.46 |
+| 7 | 100% | 95.5% | 89.5% | 0.52 |
+| 8 | 99.5% | 96.5% | 86.0% | 0.55 |
+
+The best is round 7 on the mean of the three tiers (95.0%, against round 5's 94.3%; `checkpoints/bc_round_07.zip`, sha256 e0a78d716160).
+
+On the attempt-1 dev panels (environment v2, threshold 0.3, its own `YIELD_CONTROLLER`; success over the scenes a 60 km/h reference completes; lane changes over the same scenes):
+
+| Driver | T1 (499) | T2 (456) | T3 (405) | Lane changes per episode, T1 / T2 / T3 | Episodes with ≥4 changes |
+|---|---|---|---|---|---|
+| teacher with `YIELD_CONTROLLER` | 99.8% | 97.4% | 96.5% | 1.08 / 1.33 / 1.21 | 19 / 19 / 14 |
+| d13 round 5 | 99.8% (Wilson low 0.989) | 97.8% (0.960) | 92.6% (0.896; 13 collisions, 10 stuck, 7 off-road) | 1.58 / 1.97 / 1.61 | 53 / 77 / 49 |
+| d13 round 7 | **100%** (0.992) | 97.6% (0.957; 6 collisions, 1 off-road, 4 stuck) | **93.1%** (0.902; 15 stuck, 13 collisions) | 1.16 / 1.20 / 1.04 | 21 / 15 / 8 |
+
+- Round 7 weaves far less than round 5 and crashes less on T3 (3.2% against 4.9%), but is stuck more often.
+- Its T2 failures and round 5's share no scene (10 and 11 failures).
+- Of round 5's 30 T3 failures, 8 succeeded when replayed (`trace_sut.py`, session scratchpad). Some failures therefore do not reproduce.
+
+**Why d13 stops behind warning triangles on T3.** This is the largest class of round 5's T3 failures. Traced with `probe_lane.py` and `probe_approach.py` (session scratchpad), which record the model's lane probabilities and, at the same states, the teacher's label:
+- 7 stuck scenes end 4-8 m behind a triangle (rows 97, 107, 165, 231, 380, 416, 463). d13 made no lane change in 6 of them. The teacher completes all 7, with 1-3 changes. Round 7 is stuck in the same 6.
+- The left and right probabilities do not cancel each other; P(right) stays near 0. From 35-40 m out the teacher labels "change" at every step, while the model mostly says "keep" (P ≈ 0.8-0.98). Where it does ask for the change (row 380: P(right) 0.53, 0.61, 0.37 over 2 s), "keep" comes in between, and the controller, which does not commit to a started change, steers back each time.
+- It then slows and stops about 4 m behind the triangle (centres; a 1.2 m bumper gap). The emergency-braking layer holds the brake below a 1.5 m gap, and a car at rest cannot steer out. Near the end the model asks for the wrong side (left from the leftmost lane in rows 107, 380, 416).
+- The lane-change guard never blocked the change in these traces.
+- Lane commitment (`commit`), rejected on 2026-11-02, was to be re-tested with the guards in place. It was not run, after the decision below.
+
+**Decision (author, 2026-11-05).** The author asked whether the driver is drifting away from PPO and imitation as controller layers are added. Facts given in answer:
+- PPO has not trained a driver since d2 (2026-11-02): it degraded d2 after 2.3M steps. README and DESIGN.md still list PPO as a pipeline step.
+- Every driver since d3 is imitation only.
+- Five controller layers can override the network: emergency braking, predictive braking, the escape forward, the lane-change guard and the side guard. d12 driven without them scored 91.8 / 86.2 / 76.8% on T1 / T2 / T3, and with them 97.6 / 95.2 / 90.1%.
+
+The author's decision: "i want the driver to be fully ai network, no matter how long the training takes, even if its 10 days". Offered (a) the network decides and a PID only steers to its lane, or (b) an end-to-end network that outputs steering and throttle with no controller, the author chose **(b)**.
+
+Consequences:
+- No hand-written rule acts on the SUT's actions. The rules stay only in the teacher, at training time.
+- d13 round 7 is the last rule-assisted driver, kept as the baseline.
+- Pilot 1 (2026-11-01), the only earlier end-to-end student, reached 31% with 40% off-road: its steering errors were as large as the corrections lane keeping needs. The new design must address that first.
+- Up to 10 days of training puts the qualification deadline (14 November) at risk. The author accepted this.
