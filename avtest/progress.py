@@ -32,8 +32,9 @@ def pct(x) -> str:
 def headline(report: dict) -> str:
     """One-line validation summary for console progress."""
     by = report["val_success_by_event"]
-    t1 = f" | T1 {pct(report['val_t1_success'])} of {report['val_t1_scenes']}" if "val_t1_success" in report else ""
-    return f"val {pct(report['val_success'])} (" + ", ".join(f"{e} {pct(by[e])}" for e in by) + ")" + t1
+    tiers = "".join(f" | {t} {pct(report[f'val_{t.lower()}_success'])} of {report[f'val_{t.lower()}_scenes']}"
+                    for t in ("T1", "T3") if f"val_{t.lower()}_success" in report)
+    return f"val {pct(report['val_success'])} (" + ", ".join(f"{e} {pct(by[e])}" for e in by) + ")" + tiers
 
 
 def validation_panel(size: int = VAL_PANEL) -> tuple[np.ndarray, list[int]]:
@@ -56,8 +57,10 @@ def summarise(rows: list[dict]) -> dict:
 
 
 def checkpoint_report(model_path: Path, run_dir: Path, label: str, workers: int = 4,
-                      panel: int = VAL_PANEL, record: bool = True, tier: str = TIER, t1_panel: int = 100) -> dict:
-    """Validate ``model_path`` and record the showcase scenarios under run_dir/recordings/<label>/."""
+                      panel: int = VAL_PANEL, record: bool = True, tier: str = TIER, t1_panel: int = 100,
+                      t3_panel: int = 0) -> dict:
+    """Validate ``model_path`` and record the showcase scenarios under run_dir/recordings/<label>/. ``t1_panel`` and
+    ``t3_panel``: the first that many validation θ also decoded as T1 and as T3 (val_t1_* and val_t3_* keys)."""
     from .evaluate import Evaluator
     from .recording import showcase
     if tier != TIER:
@@ -73,14 +76,18 @@ def checkpoint_report(model_path: Path, run_dir: Path, label: str, workers: int 
             recorded = [{"event": Path(r["gif"]).stem, "outcome": r["outcome"]} for r in evaluator.record(items)]
     summary = summarise(rows)
     summary["showcase"] = recorded
-    if t1_panel:
-        # the same validation θ decoded as T1, the tier most likely to qualify (LOG.md, 2026-11-01)
-        t1_thetas, t1_seeds = validation_panel(t1_panel)
-        with Evaluator(model_path, "T1", workers=workers, references=False) as evaluator:
-            t1_rows = evaluator.evaluate(t1_thetas, t1_seeds, split="val")
-        summary["val_t1_success"] = float(np.mean([r["sut"]["outcome"] == "success" for r in t1_rows]))
-        summary["val_t1_scenes"] = len(t1_rows)
-        summary["val_t1_outcomes"] = {k: sum(r["sut"]["outcome"] == k for r in t1_rows) for k in OUTCOMES}
+    # the same validation θ decoded as T1 (LOG.md, 2026-11-01) and, for drivers trained on T3, as T3: the author
+    # requires a driver that is good on every tier (LOG.md, 2026-11-05)
+    for other, size in (("T1", t1_panel), ("T3", t3_panel)):
+        if not size:
+            continue
+        other_thetas, other_seeds = validation_panel(size)
+        with Evaluator(model_path, other, workers=workers, references=False) as evaluator:
+            other_rows = evaluator.evaluate(other_thetas, other_seeds, split="val")
+        key = f"val_{other.lower()}"
+        summary[f"{key}_success"] = float(np.mean([r["sut"]["outcome"] == "success" for r in other_rows]))
+        summary[f"{key}_scenes"] = len(other_rows)
+        summary[f"{key}_outcomes"] = {k: sum(r["sut"]["outcome"] == k for r in other_rows) for k in OUTCOMES}
     return summary
 
 
@@ -97,7 +104,9 @@ def chart(history: list[dict], x_key: str, x_label: str, path: Path, title: str)
     for event, colour in zip(sc.TIERS[TIER]["events"], ("#2a78d6", "#eb6834", "#1baf7a")):
         ax.plot(x, [h["val_success_by_event"][event] for h in rows], ".--", color=colour, label=event)
     if all("val_t1_success" in h for h in rows):
-        ax.plot(x, [h["val_t1_success"] for h in rows], "s-", color="#8e44ad", lw=2, label="T1 (likely qualifying tier)")
+        ax.plot(x, [h["val_t1_success"] for h in rows], "s-", color="#8e44ad", lw=2, label="T1")
+    if all("val_t3_success" in h for h in rows):
+        ax.plot(x, [h["val_t3_success"] for h in rows], "^-", color="#5d4037", lw=2, label="T3")
     ax.axhline(0.98, color="#c00", lw=1, ls=":", label="qualification gate 98%")
     ax.set_ylim(0, 1.02)
     ax.set_xlabel(x_label)

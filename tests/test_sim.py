@@ -502,3 +502,9 @@ def test_steering_settles_after_a_curve_at_55_kmh(env):
     assert len(seen["default"][0]) == 2 and min(seen["default"][0]) >= 12
     assert max(seen["fixed"][0]) <= 6
     assert seen["fixed"][1] < seen["default"][1]
+
+
+def test_traffic_gap_needed_behind_grows_with_closing_speed():
+    from avtest.drivers import required_back_gap
+    assert required_back_gap(0.0) == 15.0 == required_back_gap(-5.0)          # MetaDrive's distance when nobody closes in
+    assert required_back_gap(14.0) == 15.0 + 3.0 * 14.0                          # ego at 60 km/h, car pulling out at 10 km/h

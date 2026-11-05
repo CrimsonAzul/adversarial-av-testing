@@ -22,7 +22,8 @@ idea at 20 km/h (``scene_passing``); d2 used plain cautious IDM (``cautious_idm`
 on its own speed, which under DAgger is the student's (docs/LOG.md, 2026-11-02).
 
 Each round (rounds 0..--rounds, 6 by default; 600 episodes over 6 worker processes):
-1. Scenes are drawn uniformly from --tier (default T2; d5 on use T1) with training-split map seeds.
+1. Scenes are drawn uniformly from --tier (default T2; d5-d11 used T1; T3 from d12, for a driver that is good on
+   every tier) with training-split map seeds.
 2. Round 0: the teacher drives. Round k: the teacher drives an episode with probability 0.5^k, otherwise the
    latest student (model_last.zip) does. Either way the teacher labels every state, so the data holds the
    teacher's corrections from the states the student's own mistakes lead to.
@@ -34,7 +35,8 @@ Each round (rounds 0..--rounds, 6 by default; 600 episodes over 6 worker process
 5. The model is fitted for --epochs (20) on the data of all rounds so far, saved as model_last.zip and
    checkpoints/bc_round_XX.zip, and the controller is written into each zip (tactical.stamp_controller), so the
    model always drives with the controller it was trained with.
-6. Validation on the fixed 200-scene panels (avtest.progress; with --tier T1 also 200 T1 scenes) and
+6. Validation on the fixed 200-scene panels (avtest.progress; with --tier T1 also 200 T1 scenes, with T3 also
+   200 T1 and 200 T3 scenes) and
    recordings of three showcase scenarios, logged to bc_log.jsonl and charted in bc_progress.png.
 At the end the round with the best validation on the training tier becomes model_best_bc.zip (and
 model_last.zip). Running the same command again skips finished rounds, so an interrupted run resumes at the
@@ -150,6 +152,11 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int, lane_ch
             "lane_change_recall": float(np.mean(chosen[changes] == command[: len(chosen)][changes])) if changes.any() else None}
 
 
+def selection_key(tier: str) -> str:
+    """The validation result the best round is chosen on: the training tier's (T2 is the main validation panel)."""
+    return {"T1": "val_t1_success", "T2": "val_success", "T3": "val_t3_success"}[tier]
+
+
 def same_run(previous: dict, settings: dict) -> bool:
     """Whether a run may continue with these settings: all equal, except that more rounds may be added."""
     rest = lambda d: {k: v for k, v in d.items() if k != "rounds"}
@@ -179,8 +186,9 @@ def main() -> None:
                         "98.0%% on T1; LOG.md, 2026-11-03)")
     p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
                    help="loss weight of lane-change samples (d2-d6: 10; d7: 3)")
-    p.add_argument("--tier", default=TIER, choices=("T1", "T2"),
-                   help="training scenes; with T1 the best round is chosen on 200 T1 validation scenes (from d5)")
+    p.add_argument("--tier", default=TIER, choices=("T1", "T2", "T3"),
+                   help="training scenes; with T1 the best round is chosen on 200 T1 validation scenes (from d5), "
+                        "with T3 on 200 T3 validation scenes (from d12: a driver for every tier)")
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
@@ -266,7 +274,9 @@ def main() -> None:
         outcomes = [o for r in results for o in r["outcomes"]]
         rollout = [o for t, o in outcomes if not t]
         report = progress.checkpoint_report(out / "model_last.zip", out, f"bc_round_{rnd:02d}", workers=min(4, args.workers),
-                                            panel=panel, tier=progress.TIER, t1_panel=panel if args.tier == "T1" else min(panel, 100))
+                                            panel=panel, tier=progress.TIER,
+                                            t1_panel=panel if args.tier in ("T1", "T3") else min(panel, 100),
+                                            t3_panel=panel if args.tier == "T3" else 0)
         row = {"round": rnd, "samples": n_samples, **fit_stats, "collect_s": collect_s, "wall_s": time.time() - t0,
                "teacher_episodes": sum(t for t, _ in outcomes),
                "teacher_failures_dropped": sum(t and o != "success" for t, o in outcomes),
@@ -279,12 +289,13 @@ def main() -> None:
               f"{progress.headline(report)} | {row['wall_s'] / 60:.1f} min", flush=True)
     # DAgger rolls out the latest student each round; PPO starts from the round that validated best
     rows = log.read()
-    select = "val_t1_success" if args.tier == "T1" else "val_success"      # the training tier's validation
+    select = selection_key(args.tier)
     best = max(rows, key=lambda r: (r[select], r["round"]))
     shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_last.zip")
     shutil.copy2(out / "checkpoints" / f"bc_round_{best['round']:02d}.zip", out / "model_best_bc.zip")
     write_json(out / "bc_done.json", {"rounds": args.rounds, "best_round": best["round"],
-                                      "best_val_success": best["val_success"], "selected_on": select, "final": rows[-1]})
+                                      "best_val_success": best["val_success"], "selected_on": select,
+                                      "selected_value": best[select], "final": rows[-1]})
     print(f"best round {best['round']} ({select} {progress.pct(best[select])}) saved as "
           f"{out / 'model_best_bc.zip'}; recordings in {out / 'recordings'}"
           + (f"; PPO can continue with: python -m scripts.train_driver --name {args.name}" if args.head == "mean" else ""),

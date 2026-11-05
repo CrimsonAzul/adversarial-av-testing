@@ -1118,3 +1118,70 @@ Round 5 is `model_best_bc.zip` (sha256 `bc3ffcfb979a…`). The training script p
 - The ten regression tests the page cites pass.
 
 **Tests:** 54 pass.
+
+## 2026-11-05 (night) — every tier, not only T1: where T2 and T3 stand at 60 km/h, and why
+
+**Decision (author, 2026-11-04):** the driver must be good on every tier, not only T1. Qualification already tests T3, then T2, then T1 and freezes the first tier that passes; T3 contains every road block and event of T1 and T2. Qualification attempt 2 with d11 stays paused: run now, it would most likely freeze T1.
+
+**Measured** on the attempt-1 T2 and T3 panels (development data; environment v2; `evaluate_controller`, 6,000 episodes). Success over the scenes at least one 60 km/h reference completes:
+
+| Driver | T2 (456 scenes) | T3 (405 scenes) |
+|---|---|---|
+| `idm60` | 87.3% | 80.0% |
+| `idm_cautious60` | 88.8% | 80.7% |
+| expert | 55.0% | 53.8% |
+| teacher, fixed steering (as measured on T1) | 87.9% (52 collisions) | 84.0% (62 collisions) |
+| teacher with d11's whole controller (as it drives in training) | **89.7%** (34 collisions, 10 stuck, 3 timeouts) | **85.2%** (48 collisions, 9 stuck) |
+| d11 | 90.6% (21 collisions, 8 off-road, 12 stuck) | 61.7% (88 off-road, 52 collisions) |
+
+- **No driver, rule-based or learned, is near 98% on T2 or T3.** The teacher, the ceiling of imitation, is about 8 points short on T2 and 13 on T3.
+- **d11 on T3:** it never saw a roundabout or an intersection in training. It completes 43 of 113 roundabout scenes; most of its T3 failures are off-road.
+
+**The teacher's failures, traced** (`trace_fail.py`, session scratchpad; each of its 107 failures replayed, with what it touched at the end, where and when):
+
+| Cause | T2 (47) | T3 (60) |
+|---|---|---|
+| Background car coming in from the side: pulling out or merging next to the ego, or crossing at a junction | 24 | 30 (13 at junctions) |
+| Stuck behind a lead car stopped at the start (d11's remaining T1 class) | 8 | 9 |
+| Succeeds on replay | 8 | 8 |
+| Other (event vehicle, rear-ended, off-road) | 7 | 13 |
+
+**Why background cars come in from the side** (step-by-step traces of 11 collisions):
+- The ego holds its lane (lateral offset 0.0 m). A background car in the adjacent lane, slow or stopped (0–15 km/h, often queued behind the event), pulls into the ego's lane as the ego passes at 25–60 km/h. Its lateral distance shrinks from about 3.2 m to 2.4 m, and they touch side by side.
+- MetaDrive's lane-change rule (`IDMPolicy.lane_change_policy`) accepts any gap over 15 m behind in the target lane (`SAFE_LANE_CHANGE_DISTANCE`), whatever the speed of the car coming up there. That suits traffic at one speed; it does not suit a 60 km/h ego passing a car pulling out at 10 km/h, which covers 15 m in about a second.
+- At junctions, neither background traffic nor the teacher gives way: cross traffic at intersections and roundabouts drives into the ego, or two cars entering side by side have crossing paths (T3 rows 13, 80, 155, 410).
+- The braking layer cannot prevent these: the other car enters the ego's path beside it, not ahead.
+
+**Experiment, off by default: `sim.TRAFFIC_GAP_CHECK`** (environment variable `AVTEST_TRAFFIC_GAP=1`, result tag `traffic50-60-v2-gapcheck`; test added).
+- With it on, a background car changes lanes only with a gap behind of 15 m plus 3 s of the closing speed of the vehicle coming up (`drivers.required_back_gap`): about 48 m for a 50 km/h ego against a car pulling out at 10 km/h.
+- On the 5 traced T2 pull-outs it turns 3 collisions into successes (rows 7, 23, 97). Row 272 is an on-ramp merge, where the ramp's lane itself joins the road, so no lane change is decided. Row 361 most likely decided its change while the ego was more than 50 m back, beyond its view, and pulled out too slowly.
+- It changes the test environment for every tier, so adopting it is the author's decision.
+
+**Measured with it on** (the same panels and settings, 4,000 episodes; tag `traffic50-60-v2-gapcheck`). Success over each environment's own solvable scenes:
+
+| Driver | T2 v2 | T2 gap check | T3 v2 | T3 gap check |
+|---|---|---|---|---|
+| `idm60` | 87.3% | 86.5% | 80.0% | 81.4% |
+| `idm_cautious60` | 88.8% | 89.4% | 80.7% | 82.2% |
+| expert | 55.0% | 56.2% | 53.8% | 55.3% |
+| teacher with the whole controller | 89.7% (456) | **91.6%** (452) | 85.2% (405) | **86.4%** (398) |
+
+- On the scenes solvable in both environments, the teacher fixes 15 and loses 4 on T2 (90.2% → 92.7%), and fixes 10 and loses 9 on T3 (86.6% → 86.9%). Replays alone change about 8 outcomes per tier, so the T2 gain is likely real and the T3 change is within noise.
+- **It is not the lever that reaches 98%.** The teacher still fails 38 T2 scenes (30 collisions) and 54 T3 scenes (45 collisions). In environment v2, 19 of its 41 traced T3 collisions ended inside a junction (roundabout 7, intersection 7, T-junction 5), where nobody gives way and a lane-change rule does not reach. The gap-check failures are not traced.
+
+**Also started tonight:** `pretrain_bc --name d12 --tier T3 --controller guard` (environment v2): d11's recipe trained on T3. It shows whether training on T3 removes d11's roundabout off-roads and whether T1 holds. `pretrain_bc --tier T3` and validation on 200 T3 scenes are new (test added; pipeline check passed).
+
+**d12 (d11's recipe trained on T3)** finished at 04:00 (6 rounds, 2 h). Its best round on 200 T3 validation scenes is round 5: T3 71.5%, T1 93.5%, T2 80.5% (all validation scenes, not only solvable ones). `model_best_bc.zip` sha256 e80044b516dd. `bc_done.json` now also records the selected value (`selected_value`), since `best_val_success` is the T2 figure whichever tier selects.
+
+Attempt-1 dev panels, environment v2, setting `0.3:off`, success over the scenes a 60 km/h reference completes (1,500 episodes):
+
+| Driver | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| d11 (trained on T1) | **98.2%** (8 stuck, 1 timeout) | **90.6%** | 61.7% (88 off-road, 52 collisions) |
+| d12 (trained on T3) | 91.8% (35 stuck, 6 timeouts) | 86.2% (36 stuck, 21 collisions) | **76.8%** (42 stuck, 8 timeouts, 40 collisions, 4 off-road) |
+| teacher with the whole controller | – | 89.7% | 85.2% |
+
+- **On T3, d12 learned the junctions:** off-road falls from 88 to 4, and roundabout scenes completed rise from 43 to 77 of 113. Its crash rate on T3 (10.9%) is below the teacher's (12.1%).
+- **It gets stuck far more, on every tier.** On T1, 38 of its 41 stuck or timed-out scenes have the event (a braking lead or a warning triangle) in the ego's own lane, and d12 changed lanes 0 or 1 times. d11 completes 34 of those 41, most with one lane change.
+- **It changes lanes less:** 0.74–0.84 lane changes per episode against d11's 1.19–1.55. Its lane-change recall on its first 20,000 training samples is 0.41 at the selected round, against d11's 0.73. The training data are not short of lane changes: 13.8% of d12's labels are a change, against 12.8% of d11's. Why it fits them worse on T3 data is not yet known.
+- **Being measured** (dev panels, d12): lane threshold 0.2 and 0.1 on T1 and T3, to see whether a lower threshold unsticks it.

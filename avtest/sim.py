@@ -291,7 +291,11 @@ class EventManager(BaseManager):
 # traffic; ENV_TAG marks result files made with the current environment. v2 (2026-11-03): event objects report
 # their scripted speed after every step (EventManager.after_step).
 ROAD_TRAFFIC = True
-ENV_TAG = "traffic50-60-v2"
+# Experimental, off unless AVTEST_TRAFFIC_GAP=1 (read by every worker process, which inherits the environment): background
+# cars change lanes only with a gap behind that grows with the closing speed of the vehicle coming up
+# (drivers.required_back_gap). Its results carry their own tag until the author decides whether to adopt it.
+TRAFFIC_GAP_CHECK = __import__("os").environ.get("AVTEST_TRAFFIC_GAP") == "1"
+ENV_TAG = "traffic50-60-v2-gapcheck" if TRAFFIC_GAP_CHECK else "traffic50-60-v2"
 
 
 class RoadTrafficManager(PGTrafficManager):

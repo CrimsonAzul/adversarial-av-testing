@@ -158,3 +158,8 @@ def test_binned_throttle_learns_hard_braking(tmp_path):
     model.save(tmp_path / "m.zip")
     again = load_policy(tmp_path / "m.zip")
     assert again.throttle_bins == THROTTLE_BINS and again.predict(obs[0])[0][1] in THROTTLE_BINS
+
+
+def test_best_round_is_chosen_on_the_training_tier():
+    from scripts.pretrain_bc import selection_key
+    assert [selection_key(t) for t in ("T1", "T2", "T3")] == ["val_t1_success", "val_success", "val_t3_success"]

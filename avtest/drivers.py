@@ -153,6 +153,35 @@ class TrafficIDMPolicy(RoadIDMPolicy):
         self.NORMAL_SPEED = float(self.np_random.uniform(*self.SPEED_RANGE_KMH))   # per vehicle; reset() reads it
         self.target_speed = self.NORMAL_SPEED
 
+    def lane_change_policy(self, all_objects):
+        """MetaDrive's, with sim.TRAFFIC_GAP_CHECK: the gap needed behind in the target lane grows with the closing
+        speed of the vehicle coming up there (``required_back_gap``). MetaDrive accepts any gap over 15 m whatever
+        that vehicle's speed: a background car stopped behind the obstacle pulled out in front of the ego passing
+        at 40-60 km/h, the largest failure class of every driver on T2 and T3 (LOG.md, 2026-11-05)."""
+        from . import sim
+        if sim.TRAFFIC_GAP_CHECK:
+            self.SAFE_LANE_CHANGE_DISTANCE = required_back_gap(self.closing_from_behind(all_objects))
+        return super().lane_change_policy(all_objects)
+
+    def closing_from_behind(self, all_objects) -> float:
+        """m/s: how much faster than this car the fastest vehicle behind it in an adjacent lane drives (0 if none)."""
+        from metadrive.policy.idm_policy import FrontBackObjects
+        lanes = self.control_object.navigation.current_ref_lanes
+        near = FrontBackObjects.get_find_front_back_objs(all_objects, self.routing_target_lane,
+                                                         self.control_object.position, self.MAX_LONG_DIST, lanes)
+        own = self.control_object.speed_km_h / 3.6
+        behind = [obj for obj in (near.back_objs[0], near.back_objs[-1]) if obj is not None]
+        return max([getattr(obj, "speed_km_h", 0.0) / 3.6 - own for obj in behind] + [0.0])
+
+
+GAP_STANDSTILL_M, GAP_TIME_S = 15.0, 3.0
+
+
+def required_back_gap(closing_mps: float) -> float:
+    """Gap a background car needs behind it in the target lane before changing lanes: MetaDrive's 15 m, plus
+    GAP_TIME_S seconds of the closing speed of the vehicle coming up there (sim.TRAFFIC_GAP_CHECK)."""
+    return GAP_STANDSTILL_M + GAP_TIME_S * max(closing_mps, 0.0)
+
 
 class IDMDriver:
     name = "idm"
