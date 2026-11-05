@@ -23,20 +23,22 @@ on its own speed, which under DAgger is the student's (docs/LOG.md, 2026-11-02).
 
 Each round (rounds 0..--rounds, 6 by default; 600 episodes over 6 worker processes):
 1. Scenes are drawn uniformly from --tier (default T2; d5-d11 used T1; T3 from d12, for a driver that is good on
-   every tier) with training-split map seeds.
+   every tier; from d13 ``all``: each episode's tier drawn from T1, T2 and T3) with training-split map seeds.
 2. Round 0: the teacher drives. Round k: the teacher drives an episode with probability 0.5^k, otherwise the
    latest student (model_last.zip) does. Either way the teacher labels every state, so the data holds the
    teacher's corrections from the states the student's own mistakes lead to.
 3. Whoever decides, the decision goes through the controller (--controller), as it will when the model
    drives: from d10 the emergency-braking layer (aeb), from d11 also the lane-change guard and speed-scaled
-   steering along the route (guard). The student so trains on the states those layers create.
+   steering along the route (guard), from d13 also braking for traffic predicted to come in from the side, the
+   check for vehicles alongside before a lane change and the low-speed lateral cap (yield). The student so
+   trains on the states those layers create.
 4. Episodes the teacher drove and failed are dropped, so a crash is never imitated; student episodes are kept.
    Every 2nd step is stored (0.1 s frames are nearly identical) as a float16 shard data/round_XX.npz.
 5. The model is fitted for --epochs (20) on the data of all rounds so far, saved as model_last.zip and
    checkpoints/bc_round_XX.zip, and the controller is written into each zip (tactical.stamp_controller), so the
    model always drives with the controller it was trained with.
-6. Validation on the fixed 200-scene panels (avtest.progress; with --tier T1 also 200 T1 scenes, with T3 also
-   200 T1 and 200 T3 scenes) and
+6. Validation on the fixed 200-scene panels (avtest.progress; with --tier T1 also 200 T1 scenes, with T3 or all
+   also 200 T1 and 200 T3 scenes) and
    recordings of three showcase scenarios, logged to bc_log.jsonl and charted in bc_progress.png.
 At the end the round with the best validation on the training tier becomes model_best_bc.zip (and
 model_last.zip). Running the same command again skips finished rounds, so an interrupted run resumes at the
@@ -65,6 +67,7 @@ TIER = "T2"                  # see docs/LOG.md, 2026-11-01: reference ceiling ch
 KEEP_EVERY = 2
 INITIAL_LOG_STD = -1.5
 LANE_CHANGE_WEIGHT = 10.0
+TIERS_MIXED = ("T1", "T2", "T3")    # --tier all: each episode's tier drawn uniformly (from d13)
 
 
 def _collect(task: dict) -> dict:
@@ -82,7 +85,8 @@ def _collect(task: dict) -> dict:
     try:
         for _ in range(task["episodes"]):
             episode_obs, episode_act = [], []
-            env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), task["tier"]))
+            tier = task["tier"] if task["tier"] != "all" else TIERS_MIXED[int(rng.integers(len(TIERS_MIXED)))]
+            env.load(sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), tier))
             obs, _ = env.reset()
             teacher = tactical.TEACHERS[task["teacher"]](env.agent, env.scenario.map_seed)
             controller = tactical.TacticalController(**task["controller"])
@@ -153,8 +157,14 @@ def fit(model, obs: np.ndarray, act: np.ndarray, epochs: int, seed: int, lane_ch
 
 
 def selection_key(tier: str) -> str:
-    """The validation result the best round is chosen on: the training tier's (T2 is the main validation panel)."""
-    return {"T1": "val_t1_success", "T2": "val_success", "T3": "val_t3_success"}[tier]
+    """The validation result the best round is chosen on: the training tier's (T2 is the main validation panel);
+    with --tier all the mean of the three tiers' (val_all_success)."""
+    return {"T1": "val_t1_success", "T2": "val_success", "T3": "val_t3_success", "all": "val_all_success"}[tier]
+
+
+def all_tiers_success(report: dict) -> float:
+    """Mean validation success over T1, T2 and T3 (--tier all)."""
+    return float(np.mean([report["val_t1_success"], report["val_success"], report["val_t3_success"]]))
 
 
 def same_run(previous: dict, settings: dict) -> bool:
@@ -179,16 +189,18 @@ def main() -> None:
     p.add_argument("--throttle-head", default="bins", choices=("bins", "regress"),
                    help="classify head only: throttle/brake as the most likely of avtest.policy.THROTTLE_BINS "
                         "(d9 on) or regressed as one value (d8)")
-    p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "guard", "hold"),
+    p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "guard", "yield", "hold"),
                    help="60 km/h teacher only: lane-relative commands (d4 on), with throttle smoothing, with the "
                         "emergency-braking layer (d10), plus the lane-change guard and speed-scaled route steering "
-                        "(guard, d11); or the hold_lane controller, which made the teacher itself worse (96.4%% vs "
+                        "(guard, d11), plus the predictive layers for traffic from the side and the low-speed lateral "
+                        "cap (yield, d13; LOG.md, 2026-11-05); or the hold_lane controller, which made the teacher itself worse (96.4%% vs "
                         "98.0%% on T1; LOG.md, 2026-11-03)")
     p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
                    help="loss weight of lane-change samples (d2-d6: 10; d7: 3)")
-    p.add_argument("--tier", default=TIER, choices=("T1", "T2", "T3"),
+    p.add_argument("--tier", default=TIER, choices=("T1", "T2", "T3", "all"),
                    help="training scenes; with T1 the best round is chosen on 200 T1 validation scenes (from d5), "
-                        "with T3 on 200 T3 validation scenes (from d12: a driver for every tier)")
+                        "with T3 on 200 T3 validation scenes (from d12: a driver for every tier), with all (each "
+                        "episode's tier drawn from T1/T2/T3, from d13) on the mean of the three tiers' validation")
     args = p.parse_args()
     from stable_baselines3 import PPO
     from scripts.train_driver import DEFAULTS
@@ -202,6 +214,7 @@ def main() -> None:
     else:
         controller = {"hold": tactical.HOLD_CONTROLLER, "smooth": tactical.SMOOTH_CONTROLLER,
                       "aeb": tactical.AEB_CONTROLLER, "guard": tactical.GUARD_CONTROLLER,
+                      "yield": tactical.YIELD_CONTROLLER,
                       "level": tactical.SUT_CONTROLLER}[args.controller]
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else "_pilot" if args.pilot else ""))
     panel = progress.VAL_PANEL
@@ -275,8 +288,10 @@ def main() -> None:
         rollout = [o for t, o in outcomes if not t]
         report = progress.checkpoint_report(out / "model_last.zip", out, f"bc_round_{rnd:02d}", workers=min(4, args.workers),
                                             panel=panel, tier=progress.TIER,
-                                            t1_panel=panel if args.tier in ("T1", "T3") else min(panel, 100),
-                                            t3_panel=panel if args.tier == "T3" else 0)
+                                            t1_panel=panel if args.tier in ("T1", "T3", "all") else min(panel, 100),
+                                            t3_panel=panel if args.tier in ("T3", "all") else 0)
+        if args.tier == "all":
+            report["val_all_success"] = all_tiers_success(report)
         row = {"round": rnd, "samples": n_samples, **fit_stats, "collect_s": collect_s, "wall_s": time.time() - t0,
                "teacher_episodes": sum(t for t, _ in outcomes),
                "teacher_failures_dropped": sum(t and o != "success" for t, o in outcomes),

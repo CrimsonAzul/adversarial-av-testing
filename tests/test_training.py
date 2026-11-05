@@ -1,6 +1,7 @@
 """Driver-training logic: run modes, curriculum, critic warm-up freezing the actor, imitation fitting."""
 import gymnasium as gym
 import numpy as np
+import pytest
 import torch
 from stable_baselines3 import PPO
 
@@ -161,5 +162,7 @@ def test_binned_throttle_learns_hard_braking(tmp_path):
 
 
 def test_best_round_is_chosen_on_the_training_tier():
-    from scripts.pretrain_bc import selection_key
+    from scripts.pretrain_bc import all_tiers_success, selection_key
     assert [selection_key(t) for t in ("T1", "T2", "T3")] == ["val_t1_success", "val_success", "val_t3_success"]
+    assert selection_key("all") == "val_all_success"
+    assert all_tiers_success({"val_t1_success": 0.9, "val_success": 0.6, "val_t3_success": 0.6}) == pytest.approx(0.7)

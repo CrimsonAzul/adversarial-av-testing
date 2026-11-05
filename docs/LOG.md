@@ -1199,3 +1199,40 @@ Attempt-1 dev panels, environment v2, setting `0.3:off`, success over the scenes
 - **It weaves.** At 0.1, one episode in five has 4 or more lane changes, and steering changes 1.8 times as much per step as d11's on T1 (1.3 times on T3). At 0.05, T1 passes the gate's numbers, but 42% of episodes have 4 or more lane changes, and T3 gets worse (more collisions).
 - **Reading (inferred from these results, not measured step by step):** in the stuck scenes, d12's lane command points the right way but too weakly to cross 0.3. A lower threshold also lets through the brief spikes elsewhere. The cure belongs in training (lane-change recall 0.41 against d11's 0.73), not in the threshold. The controller's other filters were tried before and rejected: lane commitment turned brief spikes into full lane changes (2026-11-02), and a lane debounce made decisions late enough to double collisions (2026-11-03).
 - **Neither d11 nor d12 is ready for every tier:** d11 fails T3 (off-road at junctions), and d12 is stuck at 0.3 or weaves at 0.1. The teacher itself, at 85% on T3, caps what imitation can reach on that tier.
+
+## 2026-11-05 — the teacher fixed first: four controller layers take it from 85% to 96.5% on T3
+
+**Decision (author, 2026-11-05):** fix the teacher before retraining, since imitation cannot exceed it. Later the same morning: "continue autonomously until I come back, make the appropriate decisions". The environment stays v2; the traffic gap check stays off.
+
+**Why the full-controller teacher failed** (step-by-step traces of 12 of its failures, and the end state of the 31 left after the first two layers; `trace_stuck.py`, `trace_traffic.py`, `debug_yield.py`, `trace_fail.py`, session scratchpad):
+- **Stuck at the start** (T2 13 stuck or timed out, T3 11). Until its trigger, the lead-brake or cut-in event vehicle escorts the ego at the ego's own speed, so both start at rest, 9 m apart. The 60 km/h IDM does not pull away with a car that close, so the teacher takes the escort for a stopped car and commands a pass. Its heading during the change settles at about 10° from the lane, because the lane-change steering caps the lateral error at 1 m (needed at 60 km/h). At walking pace, a lane change then takes about 20 m. The car creeps up to the lead mid-change, and the braking layer holds it 1.5 m behind until the episode ends "stuck". The teacher without the braking layers completes 9 of the 13 T2 scenes.
+- **Cars coming in from the side:** pull-outs next to a passing ego, and cross traffic inside junctions. The braking layer sees them only once they are in the ego's path, too late at 30-55 km/h.
+- **Measured:** full brake gives 13-16 m/s² from 45 km/h, half brake about 10, full throttle about 3 m/s².
+
+**Four controller options** (`avtest.tactical.TacticalController`, all off by default; tests added):
+- `lat_cap_kmh=30`: below 30 km/h, the lateral cap grows as 1 m × 30 / speed, so a car pulls out from behind a stopped one as sharply as low speed allows.
+- `yield_s=3`: every detected vehicle outside the ego's lane is projected for 3 s along its own lane, with its speed along and across it (`lane_track`). The ego is projected along its route at its current speed. If their bodies would overlap (`boxes_overlap`, rectangles with margins) and braking now would avoid it (8 m/s² assumed), the layer brakes fully. Velocities come from position changes between steps, as a tracker would estimate them: the scripted event vehicle reports a velocity along its path only, so a cut-in's sideways motion shows only in its positions.
+- `side_guard`: a commanded lane change is replaced by "keep" while moving over would overlap a vehicle that staying in lane would not. On ramp roads, the teacher's lane changes for its route had moved it into a car driving alongside.
+- `yield_accel`: when only accelerating (2.5 m/s² assumed) avoids a predicted overlap, it accelerates, unless the braking layer is braking. This targets the lead that recovers and hits an ego that has just moved back in front of it.
+
+A teacher that passes a stopped vehicle only while closing in on it, or after it has stayed stopped for 2 s, was also tried and removed. Alone, it left the 6 traced T2 scenes stuck. With the other layers, it completed 17 of the 24 stuck scenes, against the original teacher's 18.
+
+**Teacher on the attempt-1 dev panels** (environment v2; success over the scenes a 60 km/h reference completes; 3,500 new episodes):
+
+| Controller | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| `GUARD_CONTROLLER` (as d11 and d12 trained) | 97.0% (7 stuck, 8 timeouts) | 89.7% | 85.2% |
+| + `lat_cap_kmh=30` + `yield_s=3` | **100%** | 96.7% (11 collisions, 3 stuck) | 96.0% (13 collisions, 2 off-road) |
+| + `side_guard` + `yield_accel` (`YIELD_CONTROLLER`) | 99.8% (1 collision) | **97.4%** (8 collisions, 4 stuck) | **96.5%** (11 collisions, 2 stuck) |
+
+- The last two layers fix 5 and break 2 scenes on T2, and fix 6 and break 4 on T3. The fixed T2 scenes include rows 7 and 364, the two traced lane changes into a car alongside, and two more collisions with a car beside the ego (rows 24 and 141). Speed and lane changes per episode are unchanged (38 km/h and 1.31 on T2).
+- **The teacher is still short of 98% on T2 and T3.** 8 collisions remain on T2 and 11 on T3, not yet classified.
+- An earlier version of `yield_s`, which used each vehicle's reported velocity, was stopped partway through the panels. Its 393 rows are in `*_yield-reported-velocity.jsonl` beside the result files, apart from the rest.
+
+**d12 with these layers, without retraining** (setting `0.3:off+lat_cap_kmh=30+yield_s=3`): T1 97.6% (Wilson low 0.958), T2 95.2%, T3 90.1%, against 91.8%, 86.2% and 76.8% without them. Its stuck and timed-out scenes fall from 41/40/50 to 8/14/21 (T1/T2/T3), and its crash rate on T3 from 10.9% to 4.7%. Imitation labels do not change: the layers act after the decision.
+
+**d13 started** (09:25): `pretrain_bc --name d13 --tier all --controller yield`. This is d12's recipe with two changes:
+- each episode's tier is drawn from T1, T2 and T3 (new `--tier all`; the best round is chosen on the mean of the three tiers' validation);
+- the controller is `YIELD_CONTROLLER`.
+
+The aim is d11's lane changes on T1 and d12's junctions on T3 in one driver, trained on the states the new layers create, with fewer teacher demonstrations dropped as failures (d12 dropped 152 of 600 in round 0). A pipeline check passed (`runs/driver/d13_bccheck`).

@@ -121,10 +121,10 @@ class RoutePath:
     def length(self) -> float:
         return float(self.starts[-1])
 
-    def position(self, s: float) -> np.ndarray:
+    def position(self, s: float, lat: float = 0.0) -> np.ndarray:
         s = min(max(s, 0.0), self.length - 1e-6)
         i = int(np.searchsorted(self.starts, s, side="right") - 1)
-        return np.asarray(self.lanes[i].position(s - self.starts[i], 0.0))
+        return np.asarray(self.lanes[i].position(s - self.starts[i], lat))
 
     def heading(self, s: float) -> float:
         """Direction of the path at arc length s (clamped to the path)."""

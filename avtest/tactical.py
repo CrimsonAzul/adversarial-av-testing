@@ -44,6 +44,11 @@ AEB_CONTROLLER = {**SMOOTH_CONTROLLER, "threshold": 0.3, "aeb_ttc": 2.5}
 # d11 on: AEB_CONTROLLER plus the lane-change guard and speed-scaled steering along the route; d10 driven with it
 # reached 97.6% on the T1 dev panel with no off-road (LOG.md, 2026-11-03)
 GUARD_CONTROLLER = {**AEB_CONTROLLER, "lc_guard_m": 70.0, "route_steer": True, "steer_ref_kmh": 40.0}
+# d13 on: GUARD_CONTROLLER plus braking for vehicles predicted to come into the ego's path from the side (yield_s),
+# the escape forward when only that avoids one (yield_accel), the check for vehicles alongside before a lane change
+# (side_guard) and the lateral cap growing below 30 km/h (lat_cap_kmh). The full-controller teacher went from
+# 97.0 / 89.7 / 85.2% to 99.8 / 97.4 / 96.5% on the T1 / T2 / T3 dev panels (LOG.md, 2026-11-05).
+YIELD_CONTROLLER = {**GUARD_CONTROLLER, "lat_cap_kmh": 30.0, "yield_s": 3.0, "yield_accel": True, "side_guard": True}
 CONTROLLER_ENTRY = "avtest_controller.json"
 
 
@@ -98,7 +103,8 @@ class TacticalController:
     def __init__(self, threshold: float = THRESHOLD, commit: bool = False, lat_cap: float | None = None,
                  hold_lane: bool = False, smooth: float | None = None, debounce: int = 0,
                  aeb_ttc: float | None = None, lc_guard_m: float | None = None, route_steer: bool = False,
-                 steer_ref_kmh: float | None = None):
+                 steer_ref_kmh: float | None = None, yield_s: float | None = None, lat_cap_kmh: float | None = None,
+                 yield_accel: bool = False, side_guard: bool = False):
         """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
         direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
         Both against d6's visible vibration (LOG.md, 2026-11-03); off by default.
@@ -125,10 +131,35 @@ class TacticalController:
 
         ``steer_ref_kmh``: above this speed the steering is scaled by steer_ref_kmh / speed. The PID gains are
         MetaDrive's IDM's, whose traffic drives at about 30 km/h; the yaw a steering input produces grows with
-        speed, and at 45-60 km/h the loop oscillates at about 2.5 Hz (LOG.md, 2026-11-03)."""
+        speed, and at 45-60 km/h the loop oscillates at about 2.5 Hz (LOG.md, 2026-11-03).
+
+        ``yield_s``: a predictive braking layer for vehicles coming into the ego's path from the side, which the
+        braking layer above only sees once they are in it. Every detected vehicle outside the ego's lane is
+        projected along its own lane, with its current lateral speed, for yield_s seconds; the ego along its route
+        at its current speed. If the two would overlap and braking now would avoid it (``predicted_conflict``), it
+        brakes fully. Background traffic changes lanes into a passing ego and crosses junctions without giving way:
+        about half of the full-controller teacher's failures on T2 and T3 (LOG.md, 2026-11-05).
+
+        ``lat_cap_kmh``: below this speed the lateral cap grows as lat_cap * lat_cap_kmh / speed, so a car pulling
+        out from behind a stopped one turns as sharply as low speed allows. With the fixed 1 m cap the heading
+        settles about 10 degrees off the lane, a lane change takes about 20 m, and an ego stopped 9 m behind a
+        stopped car crept up to it mid-change, where the braking layer held it until the episode ended "stuck"
+        (LOG.md, 2026-11-05).
+
+        ``yield_accel`` (with yield_s): when a predicted overlap cannot be avoided by braking but can by accelerating,
+        it accelerates fully, unless the braking layer is braking. This covers a car cutting in from beside or just
+        behind, and a vehicle closing from behind in the ego's lane (a scripted lead that recovers after the ego has
+        passed it and moved back in front): the classes left in the teacher's failures with yield_s (LOG.md,
+        2026-11-05).
+
+        ``side_guard`` (with lc_guard_m): a commanded lane change is also replaced by "keep" while moving into the
+        target lane would overlap a detected vehicle within YIELD_HORIZON_S (yield_s if set) that staying in lane
+        would not, predicted as for yield_s; mid-change, it steers back. The teacher's route-forced changes on ramp
+        roads moved it into a car driving alongside (LOG.md, 2026-11-05)."""
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
         self.smooth, self.debounce, self.aeb_ttc, self.lc_guard_m = smooth, debounce, aeb_ttc, lc_guard_m
-        self.route_steer, self.steer_ref_kmh = route_steer, steer_ref_kmh
+        self.route_steer, self.steer_ref_kmh, self.yield_s = route_steer, steer_ref_kmh, yield_s
+        self.lat_cap_kmh, self.yield_accel, self.side_guard = lat_cap_kmh, yield_accel, side_guard
         self.reset()
 
     def reset(self):
@@ -139,6 +170,9 @@ class TacticalController:
         self.throttle, self.pending, self.pending_steps, self.effective = 0.0, 0, 0, 0   # smooth / debounce state
         self.guarding = False           # lc_guard_m: the last command was replaced by "keep"
         self.routes = {}                # route_steer: RoutePath per lane index, for this episode's route
+        self.last_yield = float("inf")  # yield_s: seconds to the conflict it braked for at the last step
+        self.last_escape = float("inf") # yield_accel: seconds to the conflict it accelerated away from
+        self.tracks = {}                # yield_s: object id -> (step, position) when last seen
 
     def target_lane(self, vehicle, command: float):
         navigation = vehicle.navigation
@@ -266,7 +300,119 @@ class TacticalController:
                 < self.stopped_object_ahead(vehicle, current, self.lc_guard_m)):
             self.guarding = True
             return KEEP
+        if self.side_guard and self.change_conflict(vehicle, refs[goal], current, self.yield_s or self.YIELD_HORIZON_S):
+            self.guarding = True
+            return KEEP
         return command
+
+    YIELD_HORIZON_S = 3.0
+
+    def change_conflict(self, vehicle, goal, current, horizon_s: float) -> bool:
+        """side_guard: would moving into lane ``goal`` overlap a detected vehicle within horizon_s that staying in
+        ``current`` would not? The ego keeps its speed along its route, its offset from the lane closing over
+        YIELD_LANE_CHANGE_S; other vehicles as in predicted_conflict."""
+        speed = vehicle.speed_km_h / 3.6
+        times = np.arange(1, int(round(horizon_s / self.YIELD_STEP_S)) + 1) * self.YIELD_STEP_S
+        poses = []
+        for lane in (goal, current):
+            path = self.route(vehicle, lane.index[-1])
+            s0, lat0 = path.local(vehicle.position)
+            if not np.isfinite(lat0):
+                return False
+            poses.append(path_poses(path, s0 + speed * times,
+                                    lat0 * np.clip(1.0 - times / self.YIELD_LANE_CHANGE_S, 0.0, 1.0)))
+        size = (vehicle.LENGTH, vehicle.WIDTH)
+        for obj in vehicle.lidar.get_surrounding_objects(vehicle):
+            lane = getattr(obj, "lane", None)
+            if obj is vehicle or lane is None or not hasattr(obj, "speed_km_h") or isinstance(obj, TrafficObject):
+                continue
+            other = (getattr(obj, "LENGTH", 4.5), getattr(obj, "WIDTH", 2.0))
+            track = lane_track(obj, lane, times, self.track_velocity(vehicle, obj))
+            if (boxes_overlap(*poses[0], *size, *track, *other, *self.YIELD_MARGIN_M).any()
+                    and not boxes_overlap(*poses[1], *size, *track, *other, *self.YIELD_MARGIN_M).any()):
+                return True
+        return False
+
+    def route(self, vehicle, index: int):
+        """The RoutePath along the ego's route with this lane index (cached per map and index)."""
+        from .sim import RoutePath
+        key = (id(vehicle.engine.current_map), index)
+        if key not in self.routes:
+            self.routes[key] = RoutePath(vehicle.engine.current_map.road_network, vehicle.navigation.checkpoints, index)
+        return self.routes[key]
+
+    YIELD_STEP_S = 0.2
+    YIELD_DECEL = 8.0          # m/s², assumed when testing whether braking avoids a conflict (MetaDrive's full
+                               # brake gives 13-16 m/s² from 45 km/h, half brake about 10; measured 2026-11-05)
+    YIELD_MARGIN_M = (1.0, 0.3)            # longitudinal, lateral
+    YIELD_LANE_CHANGE_S = 3.0              # the ego's own lateral offset from its target lane closes over this time
+    YIELD_ACCEL = 2.5          # m/s², assumed for an escape forward (full throttle gives about 3 from 15-45 km/h)
+    YIELD_MAX_KMH = 70.0       # ... up to this speed
+
+    def predicted_conflict(self, vehicle, horizon_s: float) -> tuple[float, float]:
+        """(seconds until a predicted overlap that braking now would avoid, seconds until one that only accelerating
+        would avoid); inf where there is none. Overlaps are those of the ego keeping its speed.
+
+        The ego follows its route in the lane it is steering for, its lateral offset from that lane closing over
+        YIELD_LANE_CHANGE_S. Each other vehicle follows its own lane at its tracked velocity along and across it (the
+        lateral part capped at one lane width), straight on past the lane's end. Bodies are rectangles with
+        YIELD_MARGIN_M added. Vehicles ahead in the ego's lane are left to the planner and the braking layer; those
+        behind it in its lane count only for the escape forward (yield_accel)."""
+        inf = float("inf")
+        target = self.last_target if getattr(self, "last_target", None) in vehicle.navigation.current_ref_lanes \
+            else vehicle.lane
+        path = self.route(vehicle, target.index[-1])
+        s0, lat0 = path.local(vehicle.position)
+        if not np.isfinite(lat0):
+            return inf, inf
+        speed = vehicle.speed_km_h / 3.6
+        times = np.arange(1, int(round(horizon_s / self.YIELD_STEP_S)) + 1) * self.YIELD_STEP_S
+        stop_t = speed / self.YIELD_DECEL
+        braked = np.where(times < stop_t, speed * times - 0.5 * self.YIELD_DECEL * times ** 2,
+                          speed * stop_t - 0.5 * self.YIELD_DECEL * stop_t ** 2)
+        top_t = max(0.0, (self.YIELD_MAX_KMH / 3.6 - speed) / self.YIELD_ACCEL)
+        sped = np.where(times < top_t, speed * times + 0.5 * self.YIELD_ACCEL * times ** 2,
+                        speed * top_t + 0.5 * self.YIELD_ACCEL * top_t ** 2 + (speed + self.YIELD_ACCEL * top_t)
+                        * (times - top_t))
+        lats = lat0 * np.clip(1.0 - times / self.YIELD_LANE_CHANGE_S, 0.0, 1.0)
+        ego_go = path_poses(path, s0 + speed * times, lats)
+        ego_brake = path_poses(path, s0 + braked, lats)
+        ego_fast = path_poses(path, s0 + sped, lats) if self.yield_accel else None
+        size = (vehicle.LENGTH, vehicle.WIDTH)
+        brake_t = escape_t = inf
+        for obj in vehicle.lidar.get_surrounding_objects(vehicle):
+            lane = getattr(obj, "lane", None)
+            if obj is vehicle or lane is None or not hasattr(obj, "speed_km_h") or isinstance(obj, TrafficObject):
+                continue
+            other = (getattr(obj, "LENGTH", 4.5), getattr(obj, "WIDTH", 2.0))
+            o_s, o_lat = path.local(obj.position)
+            in_lane = np.isfinite(o_lat) and abs(o_lat - lat0) <= (size[1] + other[1]) / 2 + self.YIELD_MARGIN_M[1]
+            if in_lane and (o_s >= s0 or ego_fast is None):
+                continue                                       # ahead in the ego's lane: planner and braking layer
+            track = lane_track(obj, lane, times, self.track_velocity(vehicle, obj))
+            hit = boxes_overlap(*ego_go, *size, *track, *other, *self.YIELD_MARGIN_M)
+            if not hit.any():
+                continue
+            first = float(times[np.argmax(hit)])
+            if not in_lane and not boxes_overlap(*ego_brake, *size, *track, *other, *self.YIELD_MARGIN_M).any():
+                brake_t = min(brake_t, first)
+            elif ego_fast is not None and not boxes_overlap(*ego_fast, *size, *track, *other, *self.YIELD_MARGIN_M).any():
+                escape_t = min(escape_t, first)
+        return brake_t, escape_t
+
+    def track_velocity(self, vehicle, obj) -> np.ndarray:
+        """An object's velocity from its change of position since the previous step, as a tracker would estimate it;
+        its reported velocity when it was not seen then. The scripted event vehicle reports a velocity along its path
+        only, so a cut-in's sideways motion shows only in its positions."""
+        from .sim import DT
+        step, here = vehicle.engine.episode_step, np.asarray(obj.position, dtype=float)[:2]
+        seen = self.tracks.get(obj.id)
+        if seen is not None and seen[0] == step:
+            return seen[2]                                     # already estimated this step
+        velocity = (here - seen[1]) / DT if seen is not None and seen[0] == step - 1 \
+            else np.asarray(obj.velocity, dtype=float)[:2]
+        self.tracks[obj.id] = (step, here, velocity)
+        return velocity
 
     def low_level(self, vehicle, action) -> np.ndarray:
         action = np.clip(np.asarray(action, dtype=float).reshape(2), -1.0, 1.0)
@@ -281,30 +427,83 @@ class TacticalController:
             action[0] = float(self.effective)
         if self.smooth is not None:
             self.throttle = action[1] = self.smooth * self.throttle + (1 - self.smooth) * action[1]
+        emergency = False
         if self.aeb_ttc is not None:
             ttc, gap = self.time_to_collision(vehicle)
             if ttc < self.aeb_ttc or gap < self.AEB_HOLD_GAP_M:
                 action[1] = -1.0                       # brake fully; hold it while something is right ahead
+                emergency = True
             self.last_ttc, self.last_gap = ttc, gap
+        if self.yield_s is not None:
+            self.last_yield, self.last_escape = self.predicted_conflict(vehicle, self.yield_s)
+            if self.last_yield < self.yield_s:
+                action[1] = -1.0
+            elif self.last_escape < self.yield_s and not emergency:
+                action[1] = 1.0
         lane = self.last_target = self.target_lane(vehicle, action[0])
         long, lat = lane.local_coordinates(vehicle.position)
         target_heading = lane.heading_theta_at(long + 1)
         if self.route_steer:
-            from .sim import RoutePath
-            key = (id(vehicle.engine.current_map), lane.index[-1])
-            if key not in self.routes:
-                self.routes[key] = RoutePath(vehicle.engine.current_map.road_network, vehicle.navigation.checkpoints,
-                                             lane.index[-1])
-            s, route_lat = self.routes[key].local(vehicle.position)
+            route = self.route(vehicle, lane.index[-1])
+            s, route_lat = route.local(vehicle.position)
             if np.isfinite(route_lat):                 # on its route; else as before, on the current segment
-                lat, target_heading = route_lat, self.routes[key].heading(s + 1)
+                lat, target_heading = route_lat, route.heading(s + 1)
         if self.lat_cap is not None:
-            lat = float(np.clip(lat, -self.lat_cap, self.lat_cap))
+            cap = self.lat_cap
+            if self.lat_cap_kmh is not None:
+                cap *= max(1.0, self.lat_cap_kmh / max(vehicle.speed_km_h, 1.0))
+            lat = float(np.clip(lat, -cap, cap))
         heading_error = -wrap_to_pi(target_heading - vehicle.heading_theta)
         steering = self.heading_pid.get_result(heading_error) + self.lateral_pid.get_result(-lat)
         if self.steer_ref_kmh is not None and vehicle.speed_km_h > self.steer_ref_kmh:
             steering *= self.steer_ref_kmh / vehicle.speed_km_h
         return np.array([np.clip(steering, -1.0, 1.0), action[1]])
+
+
+def boxes_overlap(p1, h1, l1: float, w1: float, p2, h2, l2: float, w2: float, margin_long: float = 0.0,
+                  margin_lat: float = 0.0) -> np.ndarray:
+    """Per row: do rectangle 1 (centre p1, heading h1, length l1, width w1) and rectangle 2 overlap, each grown by
+    the margins? Separating-axis test on both rectangles' axes. p1, p2: (n, 2); headings: scalars or (n,)."""
+    d = np.asarray(p2, dtype=float) - np.asarray(p1, dtype=float)
+    out = np.ones(len(d), dtype=bool)
+    for ha, la, wa, hb, lb, wb in ((h1, l1, w1, h2, l2, w2), (h2, l2, w2, h1, l1, w1)):
+        c, s = np.cos(ha), np.sin(ha)
+        dx, dy = d[:, 0] * c + d[:, 1] * s, -d[:, 0] * s + d[:, 1] * c
+        delta = np.asarray(hb) - np.asarray(ha)
+        half_x = np.abs(np.cos(delta)) * lb / 2 + np.abs(np.sin(delta)) * wb / 2
+        half_y = np.abs(np.sin(delta)) * lb / 2 + np.abs(np.cos(delta)) * wb / 2
+        out &= (np.abs(dx) < la / 2 + half_x + margin_long) & (np.abs(dy) < wa / 2 + half_y + margin_lat)
+    return out
+
+
+def path_poses(path, s, lats) -> tuple[np.ndarray, np.ndarray]:
+    """Positions (n, 2) and headings (n,) along a RoutePath at arc lengths s with lateral offsets lats."""
+    return (np.array([path.position(a, b)[:2] for a, b in zip(s, lats)]), np.array([path.heading(a) for a in s]))
+
+
+def lane_track(obj, lane, times, velocity=None) -> tuple[np.ndarray, np.ndarray]:
+    """Where a vehicle will be at ``times`` if it keeps its velocity (default: the one it reports) along and across
+    its lane: positions (n, 2) and headings (n,). Its lateral move is capped at one lane width; past the lane's end
+    it goes straight on."""
+    pos = np.asarray(obj.position, dtype=float)[:2]
+    vel = np.asarray(obj.velocity if velocity is None else velocity, dtype=float)[:2]
+    long0, lat0 = lane.local_coordinates(pos)
+    long1, lat1 = lane.local_coordinates(pos + 0.1 * vel)
+    v_long, v_lat = (long1 - long0) / 0.1, (lat1 - lat0) / 0.1
+    width = float(getattr(lane, "width", 3.5))
+    longs = long0 + v_long * np.asarray(times)
+    lats = lat0 + np.clip(v_lat * np.asarray(times), -width, width)
+    end = lane.length
+    end_dir = np.asarray(lane.heading_at(end), dtype=float)[:2]
+    points, headings = [], []
+    for a, b in zip(longs, lats):
+        if a <= end:
+            points.append(np.asarray(lane.position(max(a, 0.0), b), dtype=float)[:2])
+            headings.append(lane.heading_theta_at(max(a, 0.0)))
+        else:
+            points.append(np.asarray(lane.position(end, b), dtype=float)[:2] + (a - end) * end_dir)
+            headings.append(lane.heading_theta_at(end))
+    return np.array(points), np.array(headings)
 
 
 class LabelledCautiousIDM(CautiousIDMPolicy):

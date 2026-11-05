@@ -508,3 +508,71 @@ def test_traffic_gap_needed_behind_grows_with_closing_speed():
     from avtest.drivers import required_back_gap
     assert required_back_gap(0.0) == 15.0 == required_back_gap(-5.0)          # MetaDrive's distance when nobody closes in
     assert required_back_gap(14.0) == 15.0 + 3.0 * 14.0                          # ego at 60 km/h, car pulling out at 10 km/h
+
+
+def test_rectangles_overlap_by_separating_axes():
+    from avtest.tactical import boxes_overlap
+    car = (4.5, 2.0)
+    behind_in_lane, next_lane, beside_close = [[3.0, 0.0]], [[0.0, 3.5]], [[0.0, 1.8]]
+    for where, expected in ((behind_in_lane, True), (next_lane, False), (beside_close, True)):
+        assert boxes_overlap(np.zeros((1, 2)), 0.0, *car, np.array(where), 0.0, *car).tolist() == [expected]
+    assert not boxes_overlap(np.zeros((1, 2)), 0.0, *car, np.array(next_lane), 0.0, *car, 0.0, 0.3)[0]
+    crossing = np.array([[4.0, 4.0], [2.5, 2.5]])                  # a car at right angles, far and near
+    assert boxes_overlap(np.zeros((2, 2)), 0.0, *car, crossing, np.pi / 2, *car).tolist() == [False, True]
+
+
+def test_lane_track_follows_the_lane_and_moves_across_it():
+    """yield_s: another car is projected along its lane with its speed across it, capped at one lane width, and
+    straight on past the lane's end."""
+    from types import SimpleNamespace
+    from metadrive.component.lane.straight_lane import StraightLane
+    from avtest.tactical import lane_track
+    lane = StraightLane(np.array([0.0, 0.0]), np.array([50.0, 0.0]), width=3.5)
+    car = SimpleNamespace(position=(10.0, 0.0), velocity=(10.0, 1.0))      # 10 m/s along, 1 m/s across
+    points, headings = lane_track(car, lane, np.array([1.0, 2.0, 5.0]))
+    assert np.allclose(points, [[20.0, 1.0], [30.0, 2.0], [60.0, 3.5]])   # past the end at 5 s; lateral capped
+    assert np.allclose(headings, 0.0)
+    points, _ = lane_track(car, lane, np.array([1.0]), velocity=(5.0, 0.0))       # a tracked velocity overrides
+    assert np.allclose(points[0], [15.0, 0.0])
+
+
+def test_low_speed_lane_change_pulls_out_from_behind_a_stopped_car(env):
+    """lat_cap_kmh: standing 12 m behind a lead that stops at once, then commanded left: with the fixed 1 m lateral
+    cap the car creeps up to the lead mid-change and the braking layer holds it there ("stuck"); with the cap
+    growing at low speed it pulls out and completes the route."""
+    from avtest.tactical import LEFT, GUARD_CONTROLLER, TacticalController
+    outcomes = {}
+    for name, extra in (("without", {}), ("with", {"lat_cap_kmh": 30.0})):
+        env.load(scene("lead_brake", event_ahead=0.0, event_trigger_s=0.0, traffic_density=0.0, lane_num=0.0,
+                       event_rel_speed_mps=0.0))
+        env.reset()
+        controller = TacticalController(**{**GUARD_CONTROLLER, **extra})
+        for k in range(600):
+            command = [0.0, -1.0] if k < 40 else [LEFT, 0.5]            # wait until the lead has stopped
+            _, _, term, trunc, info = env.step(controller.low_level(env.agent, command))
+            if term or trunc:
+                break
+        outcomes[name] = info["outcome"] if term or trunc else "still driving"
+    assert outcomes == {"without": "stuck", "with": "success"}
+
+
+def test_predictive_braking_sees_a_cut_in_before_the_braking_layer(env):
+    """yield_s: a car cutting in from the next lane is braked for while it is still moving across, before the
+    braking layer, which waits until it is in the ego's path; the cut-in's sideways motion is estimated from its
+    positions, since the scripted event vehicle reports a velocity along its path only."""
+    from avtest.tactical import KEEP, GUARD_CONTROLLER, TacticalController
+    env.load(scene("cut_in", event_lane=0.4, event_ahead=0.2, event_trigger_s=0.2, traffic_density=0.0,
+                   event_intensity=1.0, event_rel_speed_mps=0.33, lane_num=0.0))
+    env.reset()
+    controller = TacticalController(**{**GUARD_CONTROLLER, "yield_s": 3.0})
+    first_yield = first_aeb = None
+    for k in range(300):
+        _, _, term, trunc, info = env.step(controller.low_level(env.agent, [KEEP, 0.7]))
+        if first_yield is None and controller.last_yield < 3.0:
+            first_yield = k
+        if first_aeb is None and (controller.last_ttc < 2.5 or controller.last_gap < 1.5):
+            first_aeb = k
+        if term or trunc:
+            break
+    assert first_yield is not None and (first_aeb is None or first_yield < first_aeb)
+    assert not (term or trunc) or info["outcome"] != "collision"
