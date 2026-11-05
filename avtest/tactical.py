@@ -107,7 +107,7 @@ class TacticalController:
                  hold_lane: bool = False, smooth: float | None = None, debounce: int = 0,
                  aeb_ttc: float | None = None, lc_guard_m: float | None = None, route_steer: bool = False,
                  steer_ref_kmh: float | None = None, yield_s: float | None = None, lat_cap_kmh: float | None = None,
-                 yield_accel: bool = False, side_guard: bool = False):
+                 yield_accel: bool = False, side_guard: bool = False, integral: bool = True):
         """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
         direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
         Both against d6's visible vibration (LOG.md, 2026-11-03); off by default.
@@ -158,16 +158,23 @@ class TacticalController:
         ``side_guard`` (with lc_guard_m): a commanded lane change is also replaced by "keep" while moving into the
         target lane would overlap a detected vehicle within YIELD_HORIZON_S (yield_s if set) that staying in lane
         would not, predicted as for yield_s; mid-change, it steers back. The teacher's route-forced changes on ramp
-        roads moved it into a car driving alongside (LOG.md, 2026-11-05)."""
+        roads moved it into a car driving alongside (LOG.md, 2026-11-05).
+
+        ``integral`` (default True): the PID integral terms. Their sum of every past error in the episode is hidden
+        from a network that sees only the current state, yet on lane keeping above 40 km/h it made 0.015 of the
+        teacher's mean steering of 0.021, growing over an episode. Off, the end-to-end student's steering labels
+        depend only on what it can observe (LOG.md, 2026-11-05).
+        """
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
         self.smooth, self.debounce, self.aeb_ttc, self.lc_guard_m = smooth, debounce, aeb_ttc, lc_guard_m
         self.route_steer, self.steer_ref_kmh, self.yield_s = route_steer, steer_ref_kmh, yield_s
         self.lat_cap_kmh, self.yield_accel, self.side_guard = lat_cap_kmh, yield_accel, side_guard
+        self.integral = integral
         self.reset()
 
     def reset(self):
-        self.heading_pid = PIDController(1.7, 0.01, 3.5)
-        self.lateral_pid = PIDController(0.3, .002, 0.05)
+        self.heading_pid = PIDController(1.7, 0.01 if self.integral else 0.0, 3.5)
+        self.lateral_pid = PIDController(0.3, .002 if self.integral else 0.0, 0.05)
         self.committed = None           # (direction, lane index) of a committed change under way
         self.home, self.goal, self.last_direction = None, None, 0       # hold_lane state
         self.throttle, self.pending, self.pending_steps, self.effective = 0.0, 0, 0, 0   # smooth / debounce state

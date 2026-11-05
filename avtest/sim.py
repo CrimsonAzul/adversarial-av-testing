@@ -67,6 +67,16 @@ def obs_dim(lidar_beams: int) -> int:
 
 
 OBS_DIM = obs_dim(LIDAR_BEAMS)
+# Lane model (end-to-end drivers, d14 on; LOG.md 2026-11-05): what a camera's lane detection reports. The centre line
+# of the ego's lane along its route at LANE_MODEL_AHEAD_M, in the ego's frame (x ahead, y to the side), the lane's
+# width, and the number of lanes to the left and right of it on the route. The lane-line beams above cannot give a
+# lane position: at steady speed on a straight road every beam that sees a line jumps by 2-7 m in about half the
+# steps, as it hits a dash of a broken line or passes through the gap. The true offset changed by 0.2 cm per step.
+# The tactical drivers never needed it: their PID controller steered with the lane geometry itself.
+LANE_MODEL_AHEAD_M = (0.0, 5.0, 10.0, 20.0, 40.0)
+LANE_MODEL_DIM = 2 * len(LANE_MODEL_AHEAD_M) + 3
+LANE_MODEL_X_M, LANE_MODEL_Y_M, LANE_MODEL_WIDTH_M, LANE_MODEL_LANES = 50.0, 10.0, 10.0, 4.0
+E2E_OBS_DIM = OBS_DIM + LANE_MODEL_DIM
 
 BASE_CONFIG = dict(
     use_render=False, log_level=50, store_map=False, start_seed=0, num_scenarios=seeds.SPLITS["heldout"][1],
@@ -83,8 +93,11 @@ BASE_CONFIG = dict(
 
 
 def sensor_config(obs_size: int) -> dict:
-    """AVTestEnv config whose observation has ``obs_size`` values: the current sensors, or the 240-beam, 50 m
-    lidar of drivers d1–d3, so older drivers can still be evaluated and watched."""
+    """AVTestEnv config whose observation has ``obs_size`` values: the current sensors plus the lane model
+    (end-to-end drivers), the current sensors (d4-d13), or the 240-beam, 50 m lidar of drivers d1–d3, so older
+    drivers can still be evaluated and watched."""
+    if obs_size == E2E_OBS_DIM:
+        return {"lane_model": True}
     if obs_size == OBS_DIM:
         return {}
     if obs_size == obs_dim(LEGACY_LIDAR["num_lasers"]):
@@ -136,15 +149,46 @@ class RoutePath:
         """Arc length of the closest point (searches every lane; routes are short)."""
         return self.local(position)[0]
 
-    def local(self, position) -> tuple[float, float]:
+    def local(self, position, clamp: bool = True) -> tuple[float, float]:
         """(arc length, signed lateral offset) of a position against the closest lane of the path; (0, inf) if no
-        lane of the path is beside it."""
+        lane of the path is beside it. Within 2 m past either end of a lane the arc length is clamped to that end,
+        unless ``clamp`` is False (the lane model, whose points must lie at their distances ahead of the ego)."""
         best, best_s, best_lat = math.inf, 0.0, math.inf
         for start, lane in zip(self.starts, self.lanes):
             long, lat = lane.local_coordinates(position)
             if -2.0 <= long <= lane.length + 2.0 and abs(lat) < best:
-                best, best_s, best_lat = abs(lat), start + min(max(long, 0.0), lane.length), lat
+                best, best_s, best_lat = abs(lat), start + (min(max(long, 0.0), lane.length) if clamp else long), lat
         return best_s, best_lat
+
+
+def lane_model(vehicle, routes: dict) -> np.ndarray:
+    """The lane model (LANE_MODEL_DIM values in [0, 1]) for the ego's current lane: centre-line points along its route
+    (sim.RoutePath with the lane's index, as the teacher steers; on the lane itself when off the route), each as
+    x and y in the ego's frame, then the lane width and the lanes left and right of it among the route's lanes.
+    ``routes`` caches RoutePath per lane index for the episode."""
+    navigation = vehicle.navigation
+    lane, position = navigation.current_lane, np.asarray(vehicle.position, dtype=float)[:2]
+    key = lane.index[-1]
+    if key not in routes:
+        routes[key] = RoutePath(vehicle.engine.current_map.road_network, navigation.checkpoints, key)
+    path = routes[key]
+    s, lat = path.local(position, clamp=False)
+    if np.isfinite(lat):
+        points = [path.position(s + d)[:2] for d in LANE_MODEL_AHEAD_M]
+    else:
+        long = lane.local_coordinates(position)[0]
+        points = [np.asarray(lane.position(long + d, 0.0), dtype=float)[:2] for d in LANE_MODEL_AHEAD_M]
+    c, n = math.cos(vehicle.heading_theta), math.sin(vehicle.heading_theta)
+    values = []
+    for point in points:
+        dx, dy = point - position
+        values += [(dx * c + dy * n) / LANE_MODEL_X_M, (-dx * n + dy * c) / LANE_MODEL_Y_M]
+    refs = navigation.current_ref_lanes
+    index = refs.index(lane) if refs is not None and lane in refs else 0
+    left, right = (index, len(refs) - 1 - index) if refs is not None and lane in refs else (0, 0)
+    values = [(v + 1) / 2 for v in values] + [lane.width / LANE_MODEL_WIDTH_M, left / LANE_MODEL_LANES,
+                                              right / LANE_MODEL_LANES]
+    return np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
 
 
 class EventManager(BaseManager):
@@ -311,7 +355,10 @@ class AVTestEnv(MetaDriveEnv):
     """MetaDriveEnv configured per episode from a decoded Scenario."""
 
     def __init__(self, config: dict | None = None):
-        super().__init__(dict(BASE_CONFIG, **(config or {})))
+        config = dict(config or {})
+        self.with_lane_model = bool(config.pop("lane_model", False))  # append lane_model() to every observation
+        self._routes: dict = {}
+        super().__init__(dict(BASE_CONFIG, **config))
         self.scenario: sc.Scenario | None = None
         self._positions: list = []
         self.telemetry: dict = {}
@@ -346,7 +393,13 @@ class AVTestEnv(MetaDriveEnv):
         obs, info = super().reset(seed=self.scenario.map_seed)
         self._positions = [np.asarray(self.agent.position)]
         self.telemetry = {"min_ttc_s": None, "min_edge_margin_m": None, "white_line_steps": 0}
-        return obs, info
+        self._routes = {}
+        return self._observe(obs), info
+
+    def _observe(self, obs):
+        if not self.with_lane_model:
+            return obs
+        return np.concatenate([obs, lane_model(self.agent, self._routes)]).astype(np.float32)
 
     def engine_values(self):
         if self.engine is not None and "event_manager" in self.engine.managers:
@@ -372,7 +425,7 @@ class AVTestEnv(MetaDriveEnv):
             info["outcome"] = "timeout"
         if info["outcome"] in ("stuck", "timeout"):        # MetaDrive only penalises crashes and off-road
             reward = -FAILURE_PENALTY
-        return obs, reward, terminated, truncated, info
+        return self._observe(obs), reward, terminated, truncated, info
 
     def _update_telemetry(self):
         ego = self.agent

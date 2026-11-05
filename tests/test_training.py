@@ -262,3 +262,24 @@ def test_end_to_end_rounds_load_in_order_with_round_zero_held_out(tmp_path):
     assert obs.shape == (132, 4) and obs.dtype == np.float16 and act[:123, 0].max() == 0 and act[123:, 0].min() == 1
     assert first.sum() == 44 and heldout.sum() == 3 * 3                 # round-0 episodes 0, 20 and 40, 3 samples each
     assert heldout[:3].all() and heldout[60:63].all() and not heldout[123:].any()
+
+
+def test_end_to_end_steering_network_sees_only_the_leading_inputs(tmp_path):
+    """steer_features: the steering outputs come from their own network on the chosen values and their changes (the
+    ego and lane state), so other inputs cannot move them; saved and loaded with the model."""
+    import torch
+    from avtest.policy import EndToEndModel, load_policy, stored_features
+    obs, act, first = end_to_end_data(300, 10, 2)
+    model = EndToEndModel(8, (32,), steer_features=(0, 1, 2, 3, 4), steer_hidden=(16,))
+    model.set_normalization(stored_features(obs, first, np.arange(len(obs))), act[:, 1], act[:, 0])
+    x = torch.as_tensor(stored_features(obs, first, np.arange(20)))
+    y = x.clone()
+    y[:, 5:8] += 0.5                                                    # change inputs 5-7 and their changes
+    y[:, 13:16] += 0.5
+    with torch.no_grad():
+        assert torch.allclose(model.net(x)[1], model.net(y)[1]) and not torch.allclose(model.net(x)[0], model.net(y)[0])
+    model.save(tmp_path / "m.zip")
+    again = load_policy(tmp_path / "m.zip")
+    assert again.steer_features == (0, 1, 2, 3, 4) and again.steer_hidden == (16,)
+    with torch.no_grad():
+        assert torch.allclose(again.net(x)[1], model.net(x)[1])

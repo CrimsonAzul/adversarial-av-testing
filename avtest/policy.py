@@ -133,6 +133,20 @@ E2E_HIDDEN = (512, 512, 512)
 INTENT_THRESHOLD = 0.3            # P(left) - P(right) beyond which the left / right steering output is used
 INPUT_STD_FLOOR = 1e-3
 INPUT_CLIP = 10.0
+# The observation's first 64 values (avtest.sim, MetaDrive's LidarStateObservation): 24 road-edge beams, heading to the
+# lane, speed, steering, last throttle and steering, yaw rate, 24 lane-line beams, and 10 navigation values. Then the
+# 4 nearest vehicles (16), 720 lidar beams and, for end-to-end drivers, the lane model (avtest.sim.lane_model, 13).
+# Given the lane intent, the teacher's steering is a PID toward a lane: a function of the ego's state and the lane
+# geometry alone. ``steer_features`` gives the steering outputs their own network on those values (and their
+# changes), so the 1,472 vehicle and lidar inputs, which steering does not depend on, cannot add error to it.
+STATE_INPUTS = 64
+STEER_HIDDEN = (256, 256)
+
+
+def steering_features(obs_dim: int) -> tuple:
+    """The ego-state values and, if the observation has it, the lane model."""
+    from .sim import E2E_OBS_DIM, OBS_DIM
+    return tuple(range(STATE_INPUTS)) + (tuple(range(OBS_DIM, E2E_OBS_DIM)) if obs_dim == E2E_OBS_DIM else ())
 
 
 class FrameHistory:
@@ -163,11 +177,21 @@ def stored_features(obs: np.ndarray, first: np.ndarray, idx: np.ndarray) -> np.n
     return np.concatenate([x, x - obs[prev].astype(np.float32)], axis=1)
 
 
+def mlp(width: int, hidden: tuple, out: int) -> nn.Sequential:
+    layers = []
+    for size in hidden:
+        layers += [nn.Linear(width, size), nn.SiLU()]
+        width = size
+    return nn.Sequential(*layers, nn.Linear(width, out))
+
+
 class EndToEndNet(nn.Module):
     """Standardised inputs, a SiLU trunk, and three heads: lane intent (3 logits: left, keep, right), one steering
-    value per intent, and throttle/brake logits over THROTTLE_BINS."""
+    value per intent, and throttle/brake logits over THROTTLE_BINS. With ``steer_features`` (observation indices) the
+    steering values come from a separate network on those observation values and their changes."""
 
-    def __init__(self, in_dim: int, hidden: tuple, n_bins: int):
+    def __init__(self, in_dim: int, hidden: tuple, n_bins: int, steer_features: tuple | None = None,
+                 steer_hidden: tuple = STEER_HIDDEN):
         super().__init__()
         layers, width = [], in_dim
         for size in hidden:
@@ -175,15 +199,23 @@ class EndToEndNet(nn.Module):
             width = size
         self.trunk = nn.Sequential(*layers)
         self.intent = nn.Linear(width, 3)
-        self.steer = nn.Linear(width, 3)
+        self.steer_features = tuple(steer_features) if steer_features else None
+        if self.steer_features:
+            idx = torch.as_tensor(self.steer_features, dtype=torch.long)
+            self.register_buffer("steer_idx", torch.cat([idx, in_dim // 2 + idx]))
+            self.steer_net = mlp(2 * len(idx), tuple(steer_hidden), 3)
+        else:
+            self.steer = nn.Linear(width, 3)
         self.throttle = nn.Linear(width, n_bins)
         self.register_buffer("mean", torch.zeros(in_dim))
         self.register_buffer("std", torch.ones(in_dim))
         self.register_buffer("steer_scale", torch.ones(3))         # labels' spread per intent (left, keep, right)
 
     def forward(self, x):
-        z = self.trunk(((x - self.mean) / self.std).clamp(-INPUT_CLIP, INPUT_CLIP))
-        return self.intent(z), self.steer(z) * self.steer_scale, self.throttle(z)
+        x = ((x - self.mean) / self.std).clamp(-INPUT_CLIP, INPUT_CLIP)
+        z = self.trunk(x)
+        steer = self.steer_net(x[:, self.steer_idx]) if self.steer_features else self.steer(z)
+        return self.intent(z), steer * self.steer_scale, self.throttle(z)
 
 
 class EndToEndModel:
@@ -191,12 +223,16 @@ class EndToEndModel:
     episode's frame history: call ``reset`` at the start of every episode (SUTDriver.start does)."""
 
     def __init__(self, obs_dim: int, hidden: tuple = E2E_HIDDEN, seed: int = 0, throttle_bins: tuple = THROTTLE_BINS,
-                 intent_threshold: float = INTENT_THRESHOLD):
+                 intent_threshold: float = INTENT_THRESHOLD, steer_features: tuple | None = None,
+                 steer_hidden: tuple = STEER_HIDDEN):
         import gymnasium as gym
         torch.manual_seed(seed)
         self.obs_dim, self.hidden = int(obs_dim), tuple(hidden)
         self.throttle_bins, self.intent_threshold = tuple(throttle_bins), float(intent_threshold)
-        self.net = EndToEndNet(2 * self.obs_dim, self.hidden, len(self.throttle_bins))
+        self.steer_features = tuple(steer_features) if steer_features else None
+        self.steer_hidden = tuple(steer_hidden)
+        self.net = EndToEndNet(2 * self.obs_dim, self.hidden, len(self.throttle_bins), self.steer_features,
+                               self.steer_hidden)
         self.observation_space = gym.spaces.Box(0.0, 1.0, (self.obs_dim,), np.float32)
         self.history = FrameHistory()
         self.last_intent = 0
@@ -238,7 +274,9 @@ class EndToEndModel:
             archive.writestr(E2E_META_ENTRY, json.dumps({"obs_dim": self.obs_dim, "hidden": list(self.hidden),
                                                          "throttle_bins": list(self.throttle_bins),
                                                          "intent_threshold": self.intent_threshold,
-                                                         "history_steps": HISTORY_STEPS}))
+                                                         "history_steps": HISTORY_STEPS,
+                                                         "steer_features": list(self.steer_features or ()),
+                                                         "steer_hidden": list(self.steer_hidden)}))
             archive.writestr(E2E_POLICY_ENTRY, buffer.getvalue())
 
     @classmethod
@@ -249,7 +287,8 @@ class EndToEndModel:
         if meta["history_steps"] != HISTORY_STEPS:
             raise ValueError(f"{path} was trained with a {meta['history_steps']}-step history")
         model = cls(meta["obs_dim"], tuple(meta["hidden"]), throttle_bins=tuple(meta["throttle_bins"]),
-                    intent_threshold=meta["intent_threshold"])
+                    intent_threshold=meta["intent_threshold"], steer_features=tuple(meta.get("steer_features") or ()),
+                    steer_hidden=tuple(meta.get("steer_hidden", STEER_HIDDEN)))
         model.net.load_state_dict(state)
         return model
 

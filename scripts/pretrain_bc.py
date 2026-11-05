@@ -95,10 +95,11 @@ def _collect(task: dict) -> dict:
     from avtest import scenario as sc, seeds
     from avtest import tactical
     from avtest.policy import FrameHistory, load_policy
-    from avtest.sim import OBS_DIM, AVTestEnv
+    from avtest.sim import E2E_OBS_DIM, OBS_DIM, AVTestEnv, sensor_config
     rng = np.random.default_rng(task["seed"])
-    env = AVTestEnv()
     e2e = task.get("action", "tactical") == "e2e"
+    obs_dim = E2E_OBS_DIM if task.get("lane_model") else OBS_DIM
+    env = AVTestEnv(sensor_config(obs_dim))
     student = load_policy(task["model"]) if task["model"] else None
     obs_list, act_list, first_list, outcomes = [], [], [], []
     try:
@@ -150,7 +151,7 @@ def _collect(task: dict) -> dict:
                 first_list.extend([True] + [False] * (len(episode_obs) - 1))
     finally:                          # an error must not leave the engine open (one per process)
         env.close()
-    return {"obs": np.asarray(obs_list, dtype=np.float16).reshape(-1, OBS_DIM),
+    return {"obs": np.asarray(obs_list, dtype=np.float16).reshape(-1, obs_dim),
             "act": np.asarray(act_list, dtype=np.float32).reshape(-1, 3 if e2e else 2),
             "first": np.asarray(first_list, dtype=bool), "outcomes": outcomes}
 
@@ -268,6 +269,12 @@ def main() -> None:
     p.add_argument("--dart", type=float, default=DART_SIGMA,
                    help="e2e only: std of the steering noise on half the teacher's episodes (0: none)")
     p.add_argument("--hidden", default=",".join(map(str, E2E_HIDDEN)), help="e2e only: hidden layer sizes")
+    p.add_argument("--lane-model", action=argparse.BooleanOptionalAction, default=True,
+                   help="e2e only: add the lane model (avtest.sim.lane_model) to the observation; the lane-line beams "
+                        "flicker between dashes and gaps (LOG.md, 2026-11-05); the d14 pilot ran without it")
+    p.add_argument("--steer-net", action=argparse.BooleanOptionalAction, default=True,
+                   help="e2e only: steering from its own network on the ego state and lane model "
+                        "(avtest.policy.steering_features); the d14 pilot steered from the shared trunk")
     args = p.parse_args()
     e2e = args.action == "e2e"
     if e2e and args.head != "classify":
@@ -305,6 +312,8 @@ def main() -> None:
         settings.update({"action": "e2e", "student_controller": tactical.END_TO_END, "dart": args.dart,
                          "dart_share": DART_SHARE, "dart_rho": DART_RHO, "hidden": list(hidden),
                          "history_steps": HISTORY_STEPS, "heldout_every": HELDOUT_EVERY})
+        if args.lane_model or args.steer_net:          # absent from the pilot's settings, which had neither
+            settings.update({"lane_model": args.lane_model, "steer_net": args.steer_net})
     if (out / "bc_config.json").exists() and not same_run(read_json(out / "bc_config.json"), settings):
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -320,7 +329,11 @@ def main() -> None:
         model = load_policy(out / "model_last.zip")
         print(f"resuming after round {done_rounds[-1]}", flush=True)
     elif e2e:
-        model = EndToEndModel(OBS_DIM, hidden, seed=DEFAULTS["seed"])
+        from avtest.policy import steering_features
+        from avtest.sim import E2E_OBS_DIM
+        obs_dim = E2E_OBS_DIM if args.lane_model else OBS_DIM
+        model = EndToEndModel(obs_dim, hidden, seed=DEFAULTS["seed"],
+                              steer_features=steering_features(obs_dim) if args.steer_net else None)
     elif args.head == "classify":
         model = TacticalModel(OBS_DIM, tuple(DEFAULTS["net"]), seed=DEFAULTS["seed"],
                               throttle_bins=THROTTLE_BINS if args.throttle_head == "bins" else None)
@@ -338,7 +351,8 @@ def main() -> None:
         current = None if rnd == 0 else str(out / "model_last.zip")
         per = max(1, args.episodes // args.workers)
         tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd, "teacher": args.teacher,
-                  "tier": args.tier, "controller": controller, "action": args.action, "dart": args.dart}
+                  "tier": args.tier, "controller": controller, "action": args.action, "dart": args.dart,
+                  "lane_model": e2e and args.lane_model}
                  for w in range(args.workers)]
         with ctx.Pool(args.workers) as pool:
             results = pool.map(_collect, tasks)

@@ -1339,3 +1339,50 @@ Consequences:
 - **C4, on track:** in the best round, ≥ 60% on T2 validation and ≥ 75% on T1 validation (pilot 1's bar: 60% on T2).
 
 If all pass, the full run follows (`--rounds` decided from the pilot's timing). If one fails, the cause is diagnosed first: a capacity test on the pilot's data (wider and narrower networks, held-out steering error), then traces.
+
+## 2026-11-05 — end-to-end pilot: FAILED (C2, C3, C4); diagnosis; the lane-line beams flicker; lane model added
+
+`pretrain_bc --name d14 --tier all --controller yield --action e2e --pilot` (`runs/driver/d14_pilot`, 13:16-14:00).
+
+| Round | Samples | Held-out steering error, lane keeping (labels' spread 0.111) | T1 | T2 | T3 | Off-road T1 / T2 / T3 |
+|---|---|---|---|---|---|---|
+| 0 | 40,686 | 0.021 | 17% | 11% | 4% | 40 / 30 / 48 |
+| 1 | 70,319 | 0.024 | 57% | 43% | 23% | 26 / 36 / 42 |
+| 2 | 102,425 | 0.033 | 66% | 47% | 28% | 20 / 43 / 49 |
+
+- **C1 PASS** (11% → 43% → 47% on T2).
+- **C2 FAIL:** off-road 20-49%.
+- **C3 FAIL:** steering error 0.033, against ≤ 0.01.
+- **C4 FAIL:** 47% on T2 and 66% on T1.
+
+No full run.
+
+**Traces** (`trace_e2e.py`, session scratchpad: round 2 on 16 T1 dev scenes, with the teacher's label computed at the same states):
+- In its own states, the model's steering differs from the teacher's by 0.06-0.36 on average. On teacher data the error is 0.03.
+- It reverses steering 1.5-3 times per second, against the teacher's 0.3-1.2.
+- On a straight road at 60 km/h (row 5) the car drifts ±0.4 m. The teacher would steer up to −0.17; the model outputs ±0.03.
+- Off-road comes at 25-55 km/h, mostly in the first block.
+- Row 1 is a missed lane change at low speed: the teacher steers 0.78, the model keeps its lane.
+
+**Hypotheses tested:**
+1. **The PID integral makes labels unobservable: rejected.** The integral (a sum of every past error in the episode) makes 0.015 of the teacher's mean steering of 0.021 on lane keeping above 40 km/h (`probe_pid.py`). The same 240 round-0 episodes collected with it on and off (same seeds; `integral_test.py`) gave held-out errors of 0.0223 and 0.026. The relative error was 22% of the labels' spread either way, and the teacher succeeded in 233 and 235 of 240. The option stays in the code (`TacticalController(integral=False)`), off.
+2. **Capacity: not the limit** (`capacity_e2e.py`, pilot rounds 0-2, the same 2,410 held-out samples):
+
+   | Network | Held-out lane-keeping error | Training loss |
+   |---|---|---|
+   | 2 × 256 | 0.044 | 0.49 |
+   | 3 × 512 | 0.036 | 0.10 |
+   | 3 × 1024 | 0.033 | 0.03 |
+   | 3 × 512, steering from its own network on the first 64 inputs (ego state) | 0.0325 | 0.22 |
+
+   The widest network fits its training data 3× better but is barely better held out.
+3. **The observation: the cause found.** On a straight T1 road at steady speed, the teacher's true lateral offset changes by 0.2 cm per step on average (`probe_lanelines.py`). Yet every lane-line beam that sees a line (22 of 24) jumps by 2-7 m in 51-52% of the steps: it hits a dash of a broken line, then passes through the gap to the next line. The road-edge beams are steady, but they give the distance to the kerb, not the position in the lane. The network's only lane-position signal flickers every other step, and its 0.2 s change inputs for those beams are mostly that flicker. The tactical drivers never depended on it: their PID steered with the lane geometry itself.
+
+**Changes (new driver d15; the d14 pilot's settings stay reproducible with `--no-lane-model --no-steer-net`):**
+- **Lane model** (`avtest.sim.lane_model`; 13 values appended to the observation, 813 in all, for end-to-end drivers only; `sensor_config(813)`). This is what a camera's lane detection reports. It gives the centre line of the ego's lane along its route at 0, 5, 10, 20 and 40 m ahead in the ego's frame, the lane's width, and the lanes left and right of it on the route. The route is the one the teacher steers along (`RoutePath`, now with an unclamped projection for this use; the clamped one is unchanged for the controller). Test: on a straight road the points lie at their distances ahead, on a line angled by the heading error; the first point is the true offset from the lane centre within 2 cm; the offset never jumps like the beams. Older drivers keep their 800 inputs.
+- **Steering network on the ego state and the lane model** (`steer_features`: the first 64 inputs plus the lane model, and their changes; 2 × 256). The trunk and its lidar no longer feed steering. Given the lane intent, the teacher's steering is a PID toward a lane, a function of those values alone.
+- Qualification accepts the 813-input observation.
+- These are two changes in one step, against the one-change rule: the steering network is meant to read the lane model. An offline ablation on the new pilot's data (with and without the steering network) will separate them.
+- Tests: 67 pass. `pretrain_bc --name d15 --tier all --controller yield --action e2e --check` ran end to end (813 inputs, steering on 77).
+
+**Pilot 2, criteria declared now** (unchanged from the first pilot): `pretrain_bc --name d15 --tier all --controller yield --action e2e --pilot`. C1: rounds 1-2 beat round 0 on the mean over the three tiers. C2: off-road ≤ 10% on every tier. C3: held-out lane-keeping steering error (teacher's intent) ≤ 0.01. C4: ≥ 60% on T2 and ≥ 75% on T1.
