@@ -38,6 +38,11 @@ def decision_text(driver) -> str:
     decision = getattr(driver, "last_decision", None)
     if decision is None:
         return "rule-based driver"
+    if getattr(driver, "end_to_end", False):
+        steer, throttle = float(decision[0]), float(decision[1])
+        intent = {1: "intent left", -1: "intent right"}.get(driver.model.last_intent, "intent keep")
+        pedal = f"throttle {throttle:.2f}" if throttle >= 0 else f"brake {-throttle:.2f}"
+        return f"steering {steer:+.3f}, {pedal} ({intent})"
     lane, throttle = float(decision[0]), float(decision[1])
     lane_text = "change left" if lane > 0.5 else "change right" if lane < -0.5 else "keep lane"
     pedal = f"throttle {throttle:.2f}" if throttle >= 0 else f"brake {-throttle:.2f}"
@@ -97,9 +102,10 @@ def main() -> None:
               "idm": drivers.IDMDriver, "idm_cautious": drivers.CautiousIDMDriver, "expert": drivers.ExpertDriver,
               "idm60": drivers.RoadIDMDriver, "idm_cautious60": drivers.CautiousRoadIDMDriver}[args.driver]()
     changes = parse_settings(args.settings)
-    if changes and not hasattr(driver, "controller_settings"):
-        raise SystemExit("--set changes the controller of the AI driver or teacher60; reference drivers have none")
-    if hasattr(driver, "controller_settings"):
+    if changes and (not hasattr(driver, "controller_settings") or getattr(driver, "end_to_end", False)):
+        raise SystemExit("--set changes the controller of the AI driver or teacher60; reference drivers and an "
+                         "end-to-end driver have none")
+    if hasattr(driver, "controller_settings") and not getattr(driver, "end_to_end", False):
         driver.controller_settings = {**driver.controller_settings, **changes}
         if args.driver == "sut":
             driver.controller = TacticalController(**driver.controller_settings)

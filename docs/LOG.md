@@ -1308,3 +1308,34 @@ Consequences:
 - d13 round 7 is the last rule-assisted driver, kept as the baseline.
 - Pilot 1 (2026-11-01), the only earlier end-to-end student, reached 31% with 40% off-road: its steering errors were as large as the corrections lane keeping needs. The new design must address that first.
 - Up to 10 days of training puts the qualification deadline (14 November) at risk. The author accepted this.
+
+## 2026-11-05 — the end-to-end driver: design, tests, and pilot criteria declared before running
+
+**Design** (`avtest.policy.EndToEndModel`; `pretrain_bc --action e2e`). The network outputs MetaDrive's steering and throttle, and nothing acts on them: the model file records `END_TO_END` in place of a controller, and `SUTDriver` passes its output to the simulator. Validation, qualification and the search use `SUTDriver`, so they need no other change. Pilot 1's failure (steering errors of about 0.04 against corrections of about 0.02) is addressed by:
+- **Inputs standardised** per feature (mean and std of round 0's data, stored in the model). Pilot 1 fed raw [0, 1] values, where lane-line and heading changes are tiny next to 720 lidar beams.
+- **Motion inputs:** every input's change over the last 0.2 s (`FrameHistory`): lateral drift, yaw, and other vehicles' motion, including the scripted event vehicle's sideways motion, which its reported velocity omits. Training samples are every 2nd step, so a stored sample's change is its difference to the previous stored sample. Observations are rounded to float16 at drive time too, so training and driving inputs are identical.
+- **One steering output per lane intent** (left / keep / right of the current lane, classified as before; conditional imitation, Codevilla et al. 2018, with the network predicting its own intent). A state where the teacher sometimes changes lane gets one lane's steering, not an average aimed between lanes.
+- **Steering loss in units of each intent's label spread.** With one common scale, lane-keeping errors counted for almost nothing next to lane-change steering, about 10× larger. The synthetic test exposed this before any real run.
+- 3 hidden layers of 512 (SiLU), throttle as 9 levels (as from d9), learning rate annealed from 1e-3 to 5e-5 within each round.
+
+**Labels and data:**
+- The teacher's own final action, after its full controller (`YIELD_CONTROLLER`: PID steering, emergency braking, predictive braking, guards). The intent label is the side of the lane that controller steered for (`tactical.steered_side`). The rules thus stay in the teacher only.
+- **DART** (Laskey et al. 2017): half the teacher's episodes get steering noise (std 0.02, correlated over about 0.5 s), so the data shows the teacher steering back from off its line. The labels stay noise-free. DAgger rounds then add the student's own states, as before.
+- Every 20th episode of round 0 is held out for steering metrics. Round 7 of d13 remains the rule-assisted baseline.
+
+**Tests** (65 pass):
+- the frame history and the stored samples give identical inputs;
+- the fit learns steering per intent, and lane-keeping steering from the motion input: held-out error 0.0026 with it, 0.0155 with the motion input zeroed (labels' spread 0.047), so the test detects a missing motion input;
+- `SUTDriver` drives an end-to-end model with no controller, resets its history every episode, and refuses a model whose recorded controller disagrees with its type;
+- the rounds load in order with round-0 episodes held out;
+- in the simulator, the stored labels are the teacher's final steering and throttle.
+
+`pretrain_bc --name d14 --tier all --controller yield --action e2e --check` ran end to end (`runs/driver/d14_bccheck`).
+
+**Pilot, criteria declared now** (`pretrain_bc --name d14 --tier all --controller yield --action e2e --pilot`: 3 rounds × 240 episodes, 100 validation scenes per tier; about 40 min):
+- **C1, DAgger works:** the best mean validation of rounds 1-2 over the three tiers is above round 0's.
+- **C2, lane keeping works:** off-road in ≤ 10% of the validation scenes of every tier in the best round (pilot 1: 40%).
+- **C3, steering precision:** held-out steering error on lane-keeping steps, for the output of the teacher's intent (`steer_mae_keep_teacher_intent`), ≤ 0.01 in the best round: half the ~0.02 corrections lane keeping needs (pilot 1: about 0.04).
+- **C4, on track:** in the best round, ≥ 60% on T2 validation and ≥ 75% on T1 validation (pilot 1's bar: 60% on T2).
+
+If all pass, the full run follows (`--rounds` decided from the pilot's timing). If one fails, the cause is diagnosed first: a capacity test on the pilot's data (wider and narrower networks, held-out steering error), then traces.

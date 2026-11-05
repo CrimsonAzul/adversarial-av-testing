@@ -109,8 +109,233 @@ def is_tactical_model(path) -> bool:
         return POLICY_ENTRY in archive.namelist()
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# End-to-end driver (author's decision, LOG.md 2026-11-05): the network outputs MetaDrive's steering and throttle
+# itself; no controller or rule acts on them. The rules (PID steering, emergency braking, the guards) stay in the
+# teacher, which labels every state the student visits with its own final steering and throttle.
+#
+# Pilot 1 (LOG.md, 2026-11-01), the only earlier end-to-end student, weaved: an MLP on raw [0, 1] sensor values made
+# steering errors (~0.04) as large as the corrections lane keeping needs (~0.02). This design addresses that with:
+# - inputs standardised per feature (mean/std of the first round's data, stored in the model), so the small changes
+#   in lane-line and heading values that steering depends on are not swamped by 720 lidar beams;
+# - the change of every input over the last 0.2 s as extra inputs (FrameHistory): lateral drift, yaw and other
+#   vehicles' motion, which one frame does not show (the scripted event vehicle reports no sideways velocity);
+# - one steering output per lane intent (left / keep / right of the current lane, classified as before): a state in
+#   which the teacher sometimes changes lane and sometimes not gets the steering of one or the other, not their
+#   average, which would aim between two lanes (the conditional-imitation structure of Codevilla et al., 2018,
+#   with the command predicted by the network itself);
+# - steering loss in units of the labels' spread for each intent: lane keeping needs corrections of ~0.02 while a
+#   lane change steers ~10x harder, and one common scale let the keeping errors count for almost nothing;
+# - a learning rate annealed within each round.
+E2E_POLICY_ENTRY, E2E_META_ENTRY = "end_to_end_policy.pt", "end_to_end_meta.json"
+HISTORY_STEPS = 2                 # motion input: obs(t) - obs(t - 0.2 s); imitation stores every 2nd step
+E2E_HIDDEN = (512, 512, 512)
+INTENT_THRESHOLD = 0.3            # P(left) - P(right) beyond which the left / right steering output is used
+INPUT_STD_FLOOR = 1e-3
+INPUT_CLIP = 10.0
+
+
+class FrameHistory:
+    """The end-to-end network's input for one episode: the observation, and its change over the last HISTORY_STEPS
+    steps (zero at the start). Observations are rounded to float16 first, as imitation data is stored, so the
+    network sees identical values when training and when driving."""
+
+    def __init__(self, steps: int = HISTORY_STEPS):
+        self.steps = steps
+        self.reset()
+
+    def reset(self) -> None:
+        self.frames: list[np.ndarray] = []
+
+    def __call__(self, obs) -> np.ndarray:
+        obs = np.asarray(obs, dtype=np.float16).astype(np.float32).reshape(-1)
+        self.frames.append(obs)
+        if len(self.frames) > self.steps + 1:
+            self.frames.pop(0)
+        return np.concatenate([obs, obs - self.frames[0]])
+
+
+def stored_features(obs: np.ndarray, first: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """FrameHistory's input for stored samples ``idx``: imitation keeps every HISTORY_STEPS-th step, so a sample's
+    change is its difference to the previous stored sample of the same episode (zero at an episode's start)."""
+    prev = np.where(first[idx], idx, idx - 1)
+    x = obs[idx].astype(np.float32)
+    return np.concatenate([x, x - obs[prev].astype(np.float32)], axis=1)
+
+
+class EndToEndNet(nn.Module):
+    """Standardised inputs, a SiLU trunk, and three heads: lane intent (3 logits: left, keep, right), one steering
+    value per intent, and throttle/brake logits over THROTTLE_BINS."""
+
+    def __init__(self, in_dim: int, hidden: tuple, n_bins: int):
+        super().__init__()
+        layers, width = [], in_dim
+        for size in hidden:
+            layers += [nn.Linear(width, size), nn.SiLU()]
+            width = size
+        self.trunk = nn.Sequential(*layers)
+        self.intent = nn.Linear(width, 3)
+        self.steer = nn.Linear(width, 3)
+        self.throttle = nn.Linear(width, n_bins)
+        self.register_buffer("mean", torch.zeros(in_dim))
+        self.register_buffer("std", torch.ones(in_dim))
+        self.register_buffer("steer_scale", torch.ones(3))         # labels' spread per intent (left, keep, right)
+
+    def forward(self, x):
+        z = self.trunk(((x - self.mean) / self.std).clamp(-INPUT_CLIP, INPUT_CLIP))
+        return self.intent(z), self.steer(z) * self.steer_scale, self.throttle(z)
+
+
+class EndToEndModel:
+    """MetaDrive's action (steering, throttle/brake) from the observation, with no controller. ``predict`` keeps the
+    episode's frame history: call ``reset`` at the start of every episode (SUTDriver.start does)."""
+
+    def __init__(self, obs_dim: int, hidden: tuple = E2E_HIDDEN, seed: int = 0, throttle_bins: tuple = THROTTLE_BINS,
+                 intent_threshold: float = INTENT_THRESHOLD):
+        import gymnasium as gym
+        torch.manual_seed(seed)
+        self.obs_dim, self.hidden = int(obs_dim), tuple(hidden)
+        self.throttle_bins, self.intent_threshold = tuple(throttle_bins), float(intent_threshold)
+        self.net = EndToEndNet(2 * self.obs_dim, self.hidden, len(self.throttle_bins))
+        self.observation_space = gym.spaces.Box(0.0, 1.0, (self.obs_dim,), np.float32)
+        self.history = FrameHistory()
+        self.last_intent = 0
+
+    def reset(self) -> None:
+        self.history.reset()
+
+    def predict(self, obs, deterministic: bool = True):
+        """(steering, throttle) for this step of the episode."""
+        return self.act_features(self.history(obs)), None
+
+    def intent_class(self, p) -> int:
+        """0 left, 1 keep, 2 right: a side when P(left) - P(right) passes intent_threshold."""
+        command = float(p[0] - p[2])
+        return 0 if command > self.intent_threshold else 2 if command < -self.intent_threshold else 1
+
+    def act_features(self, features) -> np.ndarray:
+        with torch.no_grad():
+            intent, steer, throttle = self.net(torch.as_tensor(np.asarray(features, dtype=np.float32)).reshape(1, -1))
+            k = self.intent_class(torch.softmax(intent, -1)[0].numpy())
+        self.last_intent = int(LANE_VALUES[k])
+        return np.array([np.clip(float(steer[0, k]), -1.0, 1.0),
+                         self.throttle_bins[int(throttle.argmax(-1)[0])]], dtype=np.float32)
+
+    def set_normalization(self, features: np.ndarray, steering: np.ndarray, intent: np.ndarray) -> None:
+        """Input mean/std and the steering labels' spread per intent (-1/0/+1 labels; all labels' spread for an
+        intent with fewer than 10 samples), from the first round's data; fixed afterwards."""
+        classes = lane_classes(intent)
+        spread = [np.std(steering[classes == k]) if np.sum(classes == k) >= 10 else np.std(steering) for k in range(3)]
+        with torch.no_grad():
+            self.net.mean.copy_(torch.as_tensor(features.mean(0), dtype=torch.float32))
+            self.net.std.copy_(torch.as_tensor(np.maximum(features.std(0), INPUT_STD_FLOOR), dtype=torch.float32))
+            self.net.steer_scale.copy_(torch.as_tensor(np.maximum(spread, 1e-3), dtype=torch.float32))
+
+    def save(self, path) -> None:
+        buffer = io.BytesIO()
+        torch.save(self.net.state_dict(), buffer)
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(E2E_META_ENTRY, json.dumps({"obs_dim": self.obs_dim, "hidden": list(self.hidden),
+                                                         "throttle_bins": list(self.throttle_bins),
+                                                         "intent_threshold": self.intent_threshold,
+                                                         "history_steps": HISTORY_STEPS}))
+            archive.writestr(E2E_POLICY_ENTRY, buffer.getvalue())
+
+    @classmethod
+    def load(cls, path) -> "EndToEndModel":
+        with zipfile.ZipFile(path) as archive:
+            meta = json.loads(archive.read(E2E_META_ENTRY))
+            state = torch.load(io.BytesIO(archive.read(E2E_POLICY_ENTRY)), map_location="cpu", weights_only=True)
+        if meta["history_steps"] != HISTORY_STEPS:
+            raise ValueError(f"{path} was trained with a {meta['history_steps']}-step history")
+        model = cls(meta["obs_dim"], tuple(meta["hidden"]), throttle_bins=tuple(meta["throttle_bins"]),
+                    intent_threshold=meta["intent_threshold"])
+        model.net.load_state_dict(state)
+        return model
+
+
+def is_end_to_end_model(path) -> bool:
+    with zipfile.ZipFile(path) as archive:
+        return E2E_POLICY_ENTRY in archive.namelist()
+
+
+def fit_end_to_end(model: EndToEndModel, obs: np.ndarray, act: np.ndarray, first: np.ndarray, train: np.ndarray,
+                   heldout: np.ndarray, epochs: int, seed: int, lr: float = 1e-3, lr_end: float = 5e-5,
+                   batch: int = 512) -> dict:
+    """Fit on the stored samples ``train`` (indices): cross-entropy on the intent (act[:, 0] as -1/0/+1), squared
+    error of the steering output of the teacher's intent in units of that intent's labels' spread (act[:, 1]), cross-entropy
+    on the throttle level (act[:, 2]). The learning rate falls from lr to lr_end along a cosine over the round.
+    Metrics on the samples ``heldout``, which are never trained on."""
+    gen = torch.Generator().manual_seed(seed)
+    intent = torch.as_tensor(lane_classes(act[:, 0]))
+    steer = torch.as_tensor(act[:, 1].astype(np.float32))
+    throttle = torch.as_tensor(throttle_classes(act[:, 2], model.throttle_bins))
+    optimizer = torch.optim.Adam(model.net.parameters(), lr=lr)
+    steps = epochs * int(np.ceil(len(train) / batch))
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(steps, 1), eta_min=lr_end)
+    scale = model.net.steer_scale.clone()
+    model.net.train()
+    total = 0.0
+    for _ in range(epochs):
+        order = torch.as_tensor(train)[torch.randperm(len(train), generator=gen)]
+        total = 0.0
+        for i in range(0, len(order), batch):
+            idx = order[i:i + batch]
+            x = torch.as_tensor(stored_features(obs, first, idx.numpy()))
+            intent_logits, steer_out, throttle_logits = model.net(x)
+            chosen = steer_out.gather(1, intent[idx][:, None])[:, 0]
+            loss = (nn.functional.cross_entropy(intent_logits, intent[idx])
+                    + (((chosen - steer[idx]) / scale[intent[idx]]) ** 2).mean()
+                    + nn.functional.cross_entropy(throttle_logits, throttle[idx]))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            schedule.step()
+            total += loss.item() * len(idx)
+        total /= max(len(order), 1)
+    model.net.eval()
+    return {"loss": total, **end_to_end_metrics(model, obs, act, first, heldout)}
+
+
+def end_to_end_metrics(model: EndToEndModel, obs: np.ndarray, act: np.ndarray, first: np.ndarray,
+                       idx: np.ndarray) -> dict:
+    """On samples ``idx``: the steering error of the output the driver would use (its own intent, so intent errors
+    count) and of the teacher's intent's output (steering precision alone), on steps where the teacher keeps its lane
+    and overall; the labels' spread there;
+    intent agreement, lane-change recall and false changes; throttle error and hard-brake recall."""
+    if len(idx) == 0:
+        return {}
+    with torch.no_grad():
+        intent_logits, steer_out, throttle_logits = model.net(torch.as_tensor(stored_features(obs, first, idx)))
+        p = torch.softmax(intent_logits, -1).numpy()
+    command = p[:, 0] - p[:, 2]
+    chosen = np.where(command > model.intent_threshold, 0, np.where(command < -model.intent_threshold, 2, 1))
+    truth = lane_classes(act[idx, 0])
+    steer_label, pedal_label = act[idx, 1], act[idx, 2]
+    own = np.clip(steer_out.numpy()[np.arange(len(idx)), chosen], -1, 1)
+    teacher_branch = np.clip(steer_out.numpy()[np.arange(len(idx)), truth], -1, 1)
+    pedal = np.asarray(model.throttle_bins, dtype=np.float32)[throttle_logits.argmax(-1).numpy()]
+    keep, changes, hard = truth == 1, truth != 1, pedal_label <= -0.5
+    return {"heldout_samples": int(len(idx)),
+            "steer_mae": float(np.mean(np.abs(own - steer_label))),
+            "steer_mae_keep": float(np.mean(np.abs(own[keep] - steer_label[keep]))) if keep.any() else None,
+            "steer_mae_teacher_intent": float(np.mean(np.abs(teacher_branch - steer_label))),
+            "steer_mae_keep_teacher_intent": float(np.mean(np.abs(teacher_branch[keep] - steer_label[keep])))
+            if keep.any() else None,
+            "steer_label_std": float(np.std(steer_label)),
+            "steer_label_std_keep": float(np.std(steer_label[keep])) if keep.any() else None,
+            "lane_command_agreement": float(np.mean(chosen == truth)),
+            "lane_change_recall": float(np.mean(chosen[changes] == truth[changes])) if changes.any() else None,
+            "false_lane_changes": float(np.mean((chosen != 1) & keep)),
+            "throttle_mae": float(np.mean(np.abs(pedal - pedal_label))),
+            "hard_brake_recall": float(np.mean(pedal[hard] <= -0.5)) if hard.any() else None}
+
+
 def load_policy(path):
-    """A driver's policy: TacticalModel (d8 on) or the Stable-Baselines3 PPO model (d1-d7)."""
+    """A driver's policy: EndToEndModel (from d14), TacticalModel (d8-d13) or the Stable-Baselines3 PPO model
+    (d1-d7)."""
+    if is_end_to_end_model(path):
+        return EndToEndModel.load(path)
     if is_tactical_model(path):
         return TacticalModel.load(path)
     from stable_baselines3 import PPO

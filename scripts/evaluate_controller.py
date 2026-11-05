@@ -59,6 +59,11 @@ def run(task: dict) -> dict:
     elif task["teacher"]:
         driver = TeacherDriver(task["teacher"])
         driver.controller_settings = {**driver.controller_settings, **task.get("extra", {})}   # e.g. +route_steer=1
+    elif _worker["sut"].end_to_end:              # no controller: the setting's threshold is the intent threshold
+        driver = _worker["sut"]
+        if task["commit"] or task.get("extra"):
+            raise ValueError(f"{task['setting']}: an end-to-end driver has no controller to change")
+        driver.model.intent_threshold = task["threshold"]
     else:
         driver = _worker["sut"]
         driver.controller = TacticalController(**controller_settings(driver.controller_settings, task["threshold"],

@@ -49,6 +49,9 @@ GUARD_CONTROLLER = {**AEB_CONTROLLER, "lc_guard_m": 70.0, "route_steer": True, "
 # (side_guard) and the lateral cap growing below 30 km/h (lat_cap_kmh). The full-controller teacher went from
 # 97.0 / 89.7 / 85.2% to 99.8 / 97.4 / 96.5% on the T1 / T2 / T3 dev panels (LOG.md, 2026-11-05).
 YIELD_CONTROLLER = {**GUARD_CONTROLLER, "lat_cap_kmh": 30.0, "yield_s": 3.0, "yield_accel": True, "side_guard": True}
+# From d14 (author's decision, LOG.md 2026-11-05): an end-to-end network (avtest.policy.EndToEndModel) whose steering
+# and throttle go to the simulator unchanged. Recorded in its model file in place of a controller.
+END_TO_END = {"end_to_end": True}
 CONTROLLER_ENTRY = "avtest_controller.json"
 
 
@@ -609,6 +612,16 @@ class TeacherDriver:
         _, acceleration = self.policy.act(env.agent.id)
         return self.controller.low_level(env.agent, [teacher_command(self.policy, env.agent),
                                                      float(np.clip(acceleration, -1, 1))])
+
+
+def steered_side(controller: TacticalController, vehicle) -> float:
+    """LEFT / KEEP / RIGHT: the lane ``controller`` steered for at its last step (after the lane-change guards),
+    relative to the ego's current lane among the route's lanes. The end-to-end student's intent label."""
+    navigation = vehicle.navigation
+    current, refs, target = navigation.current_lane, navigation.current_ref_lanes, getattr(controller, "last_target", None)
+    if target is None or target is current or current not in refs or target not in refs:
+        return KEEP
+    return LEFT if refs.index(target) < refs.index(current) else RIGHT
 
 
 def teacher_command(policy: LabelledCautiousIDM, vehicle) -> float:

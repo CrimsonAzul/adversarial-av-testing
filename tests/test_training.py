@@ -166,3 +166,99 @@ def test_best_round_is_chosen_on_the_training_tier():
     assert [selection_key(t) for t in ("T1", "T2", "T3")] == ["val_t1_success", "val_success", "val_t3_success"]
     assert selection_key("all") == "val_all_success"
     assert all_tiers_success({"val_t1_success": 0.9, "val_success": 0.6, "val_t3_success": 0.6}) == pytest.approx(0.7)
+
+
+def test_frame_history_gives_the_change_over_two_steps():
+    """The end-to-end input: the observation and its change over 2 steps (0.2 s), zero at the episode's start,
+    from float16-rounded values as stored for training; stored samples (every 2nd step) give the same input."""
+    from avtest.policy import FrameHistory, stored_features
+    history = FrameHistory()
+    frames = [np.full(3, v, dtype=np.float32) for v in (0.1, 0.2, 0.3, 0.45, 0.6)]
+    out = [history(f) for f in frames]
+    assert np.allclose(out[0][3:], 0) and np.allclose(out[2][3:], 0.2, atol=1e-3) and np.allclose(out[4][3:], 0.3, atol=1e-3)
+    assert out[1].dtype == np.float32 and np.array_equal(out[1][:3], frames[1].astype(np.float16).astype(np.float32))
+    stored = np.stack(frames[::2]).astype(np.float16)                   # steps 0, 2, 4 of one episode
+    first = np.array([True, False, False])
+    assert np.allclose(stored_features(stored, first, np.arange(3)), np.stack([out[0], out[2], out[4]]))
+    history.reset()
+    assert np.allclose(history(frames[4])[3:], 0)
+
+
+def end_to_end_data(n_episodes: int, length: int, seed: int):
+    """Synthetic episodes: intent from x0, steering per intent (when keeping: from x4's change between stored samples,
+    i.e. motion), throttle with rare hard braking from x3."""
+    from avtest.policy import stored_features
+    rng = np.random.default_rng(seed)
+    obs = rng.random((n_episodes * length, 8)).astype(np.float32)
+    speed = rng.uniform(-0.04, 0.04, n_episodes).repeat(length)
+    step = np.tile(np.arange(length), n_episodes)
+    obs[:, 4] = 0.5 + speed * step
+    obs = obs.astype(np.float16)
+    first = step == 0
+    delta = stored_features(obs, first, np.arange(len(obs)))[:, 8 + 4]
+    x = obs.astype(np.float32)
+    intent = np.where(x[:, 0] > 0.8, 1.0, np.where(x[:, 0] < 0.2, -1.0, 0.0))
+    steer = np.where(intent > 0, 0.3 + 0.1 * x[:, 2], np.where(intent < 0, -0.3 - 0.1 * x[:, 2], 2.0 * delta))
+    throttle = np.where(x[:, 3] > 0.92, -1.0, 0.35)
+    return obs, np.stack([intent, steer, throttle], 1).astype(np.float32), first
+
+
+def test_end_to_end_fit_learns_steering_per_intent_and_from_motion():
+    from avtest.policy import EndToEndModel, fit_end_to_end, stored_features
+    obs, act, first = end_to_end_data(600, 10, 0)
+    heldout = np.arange(len(act)) >= 5400                               # the last 60 episodes
+    model = EndToEndModel(8, (64, 64))
+    train = np.flatnonzero(~heldout)
+    model.set_normalization(stored_features(obs, first, train), act[train, 1], act[train, 0])
+    stats = fit_end_to_end(model, obs, act, first, train, np.flatnonzero(heldout), epochs=200, seed=0)
+    assert stats["lane_command_agreement"] > 0.9 and stats["lane_change_recall"] > 0.9
+    # keeping steering comes from the motion input: 0.0026 with it, 0.0155 with it zeroed (labels' spread 0.047)
+    assert stats["steer_mae_keep_teacher_intent"] < 0.15 * stats["steer_label_std_keep"]
+    assert stats["steer_mae"] < 0.15 * stats["steer_label_std"]                 # with its own intent decisions
+    assert stats["hard_brake_recall"] > 0.8
+
+
+def test_end_to_end_model_drives_without_a_controller(tmp_path):
+    """Saved and loaded with its input scaling; SUTDriver passes its steering and throttle to the simulator
+    unchanged and resets its frame history each episode; a model and a recorded controller that disagree are
+    refused."""
+    from avtest.drivers import SUTDriver
+    from avtest.policy import EndToEndModel, is_end_to_end_model, load_policy, stored_features
+    from avtest.tactical import END_TO_END, SUT_CONTROLLER, stamp_controller
+    obs, act, first = end_to_end_data(40, 10, 1)
+    model = EndToEndModel(8, (16,))
+    model.set_normalization(stored_features(obs, first, np.arange(len(obs))), act[:, 1], act[:, 0])
+    path = tmp_path / "e2e.zip"
+    model.save(path)
+    stamp_controller(path, END_TO_END)
+    assert is_end_to_end_model(path)
+    again = load_policy(path)
+    assert isinstance(again, EndToEndModel) and again.observation_space.shape == (8,)
+    assert np.allclose(again.net.std.numpy(), model.net.std.numpy())
+    driver = SUTDriver(path)
+    assert driver.end_to_end and driver.controller is None and driver.controller_settings == END_TO_END
+    episode = [obs[i].astype(np.float32) for i in range(5)]
+    driver.start(None)
+    first_run = [driver.act(None, o) for o in episode]
+    driver.start(None)
+    assert all(np.array_equal(a, driver.act(None, o)) for a, o in zip(first_run, episode))   # history was reset
+    model.reset()
+    assert np.allclose(first_run[0], model.predict(episode[0])[0])
+    assert all(-1 <= a[0] <= 1 and a[1] in model.throttle_bins for a in first_run)
+    wrong = tmp_path / "wrong.zip"
+    model.save(wrong)
+    stamp_controller(wrong, SUT_CONTROLLER)
+    with pytest.raises(ValueError):
+        SUTDriver(wrong)
+
+
+def test_end_to_end_rounds_load_in_order_with_round_zero_held_out(tmp_path):
+    rng = np.random.default_rng(0)
+    for k, episodes in ((0, 41), (1, 3)):
+        first = np.tile([True, False, False], episodes)
+        np.savez(tmp_path / f"round_{k:02d}.npz", obs=rng.random((len(first), 4)).astype(np.float16),
+                 act=np.full((len(first), 3), k, dtype=np.float32), first=first)
+    obs, act, first, heldout = pretrain_bc.load_rounds(tmp_path, 1)
+    assert obs.shape == (132, 4) and obs.dtype == np.float16 and act[:123, 0].max() == 0 and act[123:, 0].min() == 1
+    assert first.sum() == 44 and heldout.sum() == 3 * 3                 # round-0 episodes 0, 20 and 40, 3 samples each
+    assert heldout[:3].all() and heldout[60:63].all() and not heldout[123:].any()

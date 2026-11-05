@@ -23,10 +23,15 @@ class SUTDriver:
     def __init__(self, model_path: Path):
         from .policy import load_policy
         from .tactical import TacticalController, controller_for_model
-        self.model = load_policy(model_path)                 # TacticalModel (d8 on) or PPO (d1-d7)
-        # each driver drives with the controller it was trained with (recorded in the file from d7 on)
+        from .policy import EndToEndModel
+        self.model = load_policy(model_path)     # EndToEndModel (d14 on), TacticalModel (d8-d13) or PPO (d1-d7)
+        # each driver drives with the controller it was trained with (recorded in the file from d7 on); an
+        # end-to-end driver records END_TO_END and has none: its steering and throttle go to the simulator unchanged
         self.controller_settings = controller_for_model(model_path, self.obs_size)
-        self.controller = TacticalController(**self.controller_settings)
+        self.end_to_end = bool(self.controller_settings.get("end_to_end"))
+        if self.end_to_end != isinstance(self.model, EndToEndModel):
+            raise ValueError(f"{model_path}: model type and recorded controller {self.controller_settings} disagree")
+        self.controller = None if self.end_to_end else TacticalController(**self.controller_settings)
 
     @property
     def obs_size(self) -> int:
@@ -34,12 +39,17 @@ class SUTDriver:
         return int(self.model.observation_space.shape[0])
 
     def start(self, env):
-        self.controller.reset()
+        if self.end_to_end:
+            self.model.reset()                         # its frame history belongs to one episode
+        else:
+            self.controller.reset()
 
     def act(self, env, obs):
-        tactical, _ = self.model.predict(obs, deterministic=True)
-        self.last_decision = tactical                  # (lane command, throttle), shown by scripts.watch_driver
-        return self.controller.low_level(env.agent, tactical)
+        decision, _ = self.model.predict(obs, deterministic=True)
+        self.last_decision = decision                  # shown by scripts.watch_driver: (lane command, throttle), or
+        if self.end_to_end:                            # (steering, throttle) for an end-to-end driver
+            return decision
+        return self.controller.low_level(env.agent, decision)
 
 
 class CautiousIDMPolicy(IDMPolicy):
