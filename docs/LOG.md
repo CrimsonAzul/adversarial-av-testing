@@ -1236,3 +1236,13 @@ A teacher that passes a stopped vehicle only while closing in on it, or after it
 - the controller is `YIELD_CONTROLLER`.
 
 The aim is d11's lane changes on T1 and d12's junctions on T3 in one driver, trained on the states the new layers create, with fewer teacher demonstrations dropped as failures (d12 dropped 152 of 600 in round 0). A pipeline check passed (`runs/driver/d13_bccheck`).
+
+**The fixed teacher in the gap-check environment** (`AVTEST_TRAFFIC_GAP=1`, still off by default; 1,000 episodes). It informs the author's pending decision on adopting the gap check:
+
+| Teacher with `YIELD_CONTROLLER` | T2 | T3 |
+|---|---|---|
+| environment v2 | 97.4% (456 solvable scenes; Wilson low 0.955) | 96.5% (405; 0.943) |
+| v2 + traffic gap check | **98.7%** (452; **0.971**; 6 collisions) | 97.0% (398; 0.948; 9 collisions) |
+| on the scenes solvable in both, v2 / gap check | 98.2% / 99.1% (441) | 97.7% / 97.2% (389) |
+
+With the gap check, the teacher meets the gate's numbers on T2 but not on T3. On T3 the gap check makes no measurable difference.
