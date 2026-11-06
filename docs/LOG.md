@@ -1504,7 +1504,7 @@ This is 13 collections (rounds 0-12) of 600 episodes, each fitted for 20 epochs 
 - Removing the lane-line beams from the steering network changes neither. Rejected.
 - The jitter is a comfort issue; these data show no failures caused by it.
 
-**d17** (started about 13:30): d16's settings plus `--brake-weight 3`, trained from scratch so that it compares with d16 by one change:
+**d17** (started 12:10): d16's settings plus `--brake-weight 3`, trained from scratch so that it compares with d16 by one change:
 
     .venv\Scripts\python.exe -m scripts.pretrain_bc --name d17 --tier all --controller yield_pd --action e2e --rounds 12 --brake-weight 3
 
