@@ -49,6 +49,11 @@ GUARD_CONTROLLER = {**AEB_CONTROLLER, "lc_guard_m": 70.0, "route_steer": True, "
 # (side_guard) and the lateral cap growing below 30 km/h (lat_cap_kmh). The full-controller teacher went from
 # 97.0 / 89.7 / 85.2% to 99.8 / 97.4 / 96.5% on the T1 / T2 / T3 dev panels (LOG.md, 2026-11-05).
 YIELD_CONTROLLER = {**GUARD_CONTROLLER, "lat_cap_kmh": 30.0, "yield_s": 3.0, "yield_accel": True, "side_guard": True}
+# The teacher of the end-to-end drivers from d16: YIELD_CONTROLLER without the PID integral terms, whose sum over the
+# episode the student cannot observe. With the lane model, the student's held-out steering error on 240 round-0
+# episodes fell from 0.014 to 0.009; the teacher scored 100 / 98.0 / 95.6% on the T1 / T2 / T3 dev panels against
+# 99.8 / 97.4 / 96.5% with them (LOG.md, 2026-11-06).
+YIELD_PD_CONTROLLER = {**YIELD_CONTROLLER, "integral": False}
 # From d14 (author's decision, LOG.md 2026-11-05): an end-to-end network (avtest.policy.EndToEndModel) whose steering
 # and throttle go to the simulator unchanged. Recorded in its model file in place of a controller.
 END_TO_END = {"end_to_end": True}

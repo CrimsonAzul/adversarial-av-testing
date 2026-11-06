@@ -250,11 +250,12 @@ def main() -> None:
     p.add_argument("--throttle-head", default="bins", choices=("bins", "regress"),
                    help="classify head only: throttle/brake as the most likely of avtest.policy.THROTTLE_BINS "
                         "(d9 on) or regressed as one value (d8)")
-    p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "guard", "yield", "hold"),
+    p.add_argument("--controller", default="level", choices=("level", "smooth", "aeb", "guard", "yield", "yield_pd", "hold"),
                    help="60 km/h teacher only: lane-relative commands (d4 on), with throttle smoothing, with the "
                         "emergency-braking layer (d10), plus the lane-change guard and speed-scaled route steering "
                         "(guard, d11), plus the predictive layers for traffic from the side and the low-speed lateral "
-                        "cap (yield, d13; LOG.md, 2026-11-05); or the hold_lane controller, which made the teacher itself worse (96.4%% vs "
+                        "cap (yield, d13; LOG.md, 2026-11-05), the same without the PID integral (yield_pd: the "
+                        "end-to-end teacher from d16, LOG.md 2026-11-06); or the hold_lane controller, which made the teacher itself worse (96.4%% vs "
                         "98.0%% on T1; LOG.md, 2026-11-03)")
     p.add_argument("--lane-change-weight", type=float, default=LANE_CHANGE_WEIGHT,
                    help="loss weight of lane-change samples (d2-d6: 10; d7: 3)")
@@ -291,7 +292,7 @@ def main() -> None:
     else:
         controller = {"hold": tactical.HOLD_CONTROLLER, "smooth": tactical.SMOOTH_CONTROLLER,
                       "aeb": tactical.AEB_CONTROLLER, "guard": tactical.GUARD_CONTROLLER,
-                      "yield": tactical.YIELD_CONTROLLER,
+                      "yield": tactical.YIELD_CONTROLLER, "yield_pd": tactical.YIELD_PD_CONTROLLER,
                       "level": tactical.SUT_CONTROLLER}[args.controller]
     out = ROOT / "runs/driver" / (args.name + ("_bccheck" if args.check else "_pilot" if args.pilot else ""))
     panel = progress.VAL_PANEL

@@ -1386,3 +1386,52 @@ No full run.
 - Tests: 67 pass. `pretrain_bc --name d15 --tier all --controller yield --action e2e --check` ran end to end (813 inputs, steering on 77).
 
 **Pilot 2, criteria declared now** (unchanged from the first pilot): `pretrain_bc --name d15 --tier all --controller yield --action e2e --pilot`. C1: rounds 1-2 beat round 0 on the mean over the three tiers. C2: off-road ≤ 10% on every tier. C3: held-out lane-keeping steering error (teacher's intent) ≤ 0.01. C4: ≥ 60% on T2 and ≥ 75% on T1.
+
+## 2026-11-06 — pilot 2: C1, C2 and C4 pass, C3 fails; the PID integral now matters; d16 started
+
+`pretrain_bc --name d15 --tier all --controller yield --action e2e --pilot` (`runs/driver/d15_pilot`, 14:31-15:05 on 2026-11-05):
+
+| Round | Samples | Held-out steering error, lane keeping (labels' spread 0.101) | T1 | T2 | T3 | Off-road T1 / T2 / T3 |
+|---|---|---|---|---|---|---|
+| 0 | 40,503 | 0.014 | 28% | 28% | 15% | 10 / 2 / 20 |
+| 1 | 73,515 | 0.016 | 83% | 82% | 58% | 1 / 0 / 5 |
+| 2 | 112,242 | 0.023 | 88% | 80% | 63% | 2 / 1 / 9 |
+
+- **C1 PASS:** mean over the tiers 23.7% → 74.3% → 77.0%.
+- **C2 PASS:** off-road ≤ 9% on every tier, against 20-49% in pilot 1.
+- **C3 FAIL:** 0.023 against ≤ 0.01.
+- **C4 PASS:** T2 80%, T1 88%.
+
+Collisions are now the main failure in round 2: T1 4, T2 13, T3 25, against off-road 2 / 1 / 9 and stuck 6 / 6 / 3.
+
+**C3 diagnosed:**
+- **The integral test repeated with the lane model and the steering network** (`integral_test.py 240 lane`, the same 240 round-0 episodes by seed). The held-out error was 0.014 with the PID integral and 0.009 without it: 13.9% and 7.7% of the labels' spread. The integral-on result reproduces pilot 2's round 0 exactly. Without the lane model the integral made no difference (2026-11-05), because the flickering beams dominated the error.
+- **The held-out error rises across rounds** (0.014 → 0.023), as in pilot 1. The held-out samples are round-0 teacher episodes, whose share of the training data falls from all of it to a third by round 2. This is not yet explained.
+- **Ablation of the steering network** (pilot 2's rounds 0-2; `capacity_e2e.py`): held-out lane-keeping error 0.0205 with it, 0.0293 with steering from the shared trunk. The trunk's training loss is half (0.11 against 0.23), so it fits steering from inputs that do not generalise. The steering network is justified on its own.
+
+**The teacher without the integral** (`YIELD_CONTROLLER` + `integral=0`) on the attempt-1 dev panels (1,500 episodes; success over the scenes a 60 km/h reference completes):
+
+| Teacher | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| with the integral | 99.8% (1 collision) | 97.4% (Wilson low 0.955; 8 collisions, 4 stuck) | 96.5% (0.943; 11 collisions, 1 off-road, 2 stuck) |
+| without | 100% | **98.0%** (0.963; 6 collisions, 3 stuck) | 95.6% (0.931; 15 collisions, 3 stuck) |
+
+- The mean over the three tiers is the same (97.9%).
+- On T3, 10 scenes fail only without the integral and 6 only with it, so the 0.9-point gap is inside the run-to-run variation seen before (2026-11-05: d13's T2 failures in two rounds shared no scene).
+- Speed (32.7 km/h on T3), lane changes (1.21) and steering change per step are unchanged.
+
+**Decision** (mine, under the author's "go ahead"):
+- The full run uses the teacher without the integral: `tactical.YIELD_PD_CONTROLLER`, `pretrain_bc --controller yield_pd`. Otherwise its settings are pilot 2's.
+- It gets a new name, d16, so that d15 stays pilot 2's configuration.
+- The integral fix was tested on round-0 data and on the teacher's dev panels, not in a third pilot. The full run validates every round on 200 scenes per tier, so a regression shows within its first rounds.
+
+**d16 started** (2026-11-06, about 02:45). Checks first:
+- 67 tests pass;
+- `pretrain_bc --name d16 --tier all --controller yield_pd --action e2e --check` ran end to end (integral off, lane model, steering network);
+- 59 GB of disk free (about 0.45 GB of data per round).
+
+Command, in a terminal tab:
+
+    .venv\Scripts\python.exe -m scripts.pretrain_bc --name d16 --tier all --controller yield_pd --action e2e --rounds 12
+
+This is 13 collections (rounds 0-12) of 600 episodes, each fitted for 20 epochs on all data so far, and validated on 200 T2, 200 T1 and 200 T3 scenes. Expected duration: about 6-7 h; per round about 10 min of collection and 10 min of validation, plus a fit that grows to about 25 min. A watcher reports completion, the end of all Python processes, or 60 minutes without a file change. The app keeps the computer from idle-sleeping while the session is active.
