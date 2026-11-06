@@ -283,3 +283,43 @@ def test_end_to_end_steering_network_sees_only_the_leading_inputs(tmp_path):
     assert again.steer_features == (0, 1, 2, 3, 4) and again.steer_hidden == (16,)
     with torch.no_grad():
         assert torch.allclose(again.net(x)[1], model.net(x)[1])
+
+
+def test_end_to_end_brake_weight_raises_hard_brake_recall():
+    """brake_weight: the hard-braking throttle levels weigh more in the cross-entropy, so where braking is uncertain
+    (here 40% of the samples in a region brake) the model brakes far more often than unweighted (measured: 0.67
+    against 0.16 of the held-out hard brakes; it stays unsure near the region's edge)."""
+    from avtest.policy import EndToEndModel, fit_end_to_end, stored_features
+    rng = np.random.default_rng(3)
+    obs = rng.random((4000, 6)).astype(np.float16)
+    x = obs.astype(np.float32)
+    brake = (x[:, 0] > 0.8) & (rng.random(len(x)) < 0.4)              # an uncertain region, braking 40% of the time
+    act = np.stack([np.zeros(len(x)), np.zeros(len(x)), np.where(brake, -1.0, 0.35)], 1).astype(np.float32)
+    first = np.ones(len(x), dtype=bool)
+    train, held = np.arange(3000), np.arange(3000, 4000)
+    recall = {}
+    for w in (1.0, 4.0):
+        model = EndToEndModel(6, (32,))
+        model.set_normalization(stored_features(obs, first, train), act[train, 1], act[train, 0])
+        recall[w] = fit_end_to_end(model, obs, act, first, train, held, epochs=200, seed=0, brake_weight=w)["hard_brake_recall"]
+    assert recall[1.0] < 0.3 and recall[4.0] > recall[1.0] + 0.4
+
+
+def test_end_to_end_steering_can_blend_the_intent_outputs(tmp_path):
+    """steer_blend: steering is the intent probabilities' mix of the three steering outputs, so it moves smoothly
+    where the intent is uncertain; saved with the model."""
+    import torch
+    from avtest.policy import EndToEndModel, load_policy, stored_features
+    obs, act, first = end_to_end_data(50, 10, 4)
+    model = EndToEndModel(8, (16,))
+    model.set_normalization(stored_features(obs, first, np.arange(len(obs))), act[:, 1], act[:, 0])
+    features = stored_features(obs, first, np.arange(1))[0]
+    with torch.no_grad():
+        intent, steer, _ = model.net(torch.as_tensor(features).reshape(1, -1))
+        p = torch.softmax(intent, -1)[0].numpy()
+    outputs = np.clip(steer[0].numpy(), -1, 1)
+    assert np.isclose(model.act_features(features)[0], outputs[model.intent_class(p)])
+    model.steer_blend = True
+    assert np.isclose(model.act_features(features)[0], p @ outputs, atol=1e-6)
+    model.save(tmp_path / "b.zip")
+    assert load_policy(tmp_path / "b.zip").steer_blend

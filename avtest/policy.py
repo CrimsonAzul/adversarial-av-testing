@@ -224,11 +224,15 @@ class EndToEndModel:
 
     def __init__(self, obs_dim: int, hidden: tuple = E2E_HIDDEN, seed: int = 0, throttle_bins: tuple = THROTTLE_BINS,
                  intent_threshold: float = INTENT_THRESHOLD, steer_features: tuple | None = None,
-                 steer_hidden: tuple = STEER_HIDDEN):
+                 steer_hidden: tuple = STEER_HIDDEN, steer_blend: bool = False):
         import gymnasium as gym
         torch.manual_seed(seed)
         self.obs_dim, self.hidden = int(obs_dim), tuple(hidden)
         self.throttle_bins, self.intent_threshold = tuple(throttle_bins), float(intent_threshold)
+        # steer_blend: steering = the intent probabilities' mix of the three steering outputs, instead of the output of
+        # the decided intent. d16's intent switched on 6.4% of steps, each switch a 0.42 steering jump on average:
+        # 65% of all its steering change (LOG.md, 2026-11-06). Training is the same either way.
+        self.steer_blend = bool(steer_blend)
         self.steer_features = tuple(steer_features) if steer_features else None
         self.steer_hidden = tuple(steer_hidden)
         self.net = EndToEndNet(2 * self.obs_dim, self.hidden, len(self.throttle_bins), self.steer_features,
@@ -252,10 +256,12 @@ class EndToEndModel:
     def act_features(self, features) -> np.ndarray:
         with torch.no_grad():
             intent, steer, throttle = self.net(torch.as_tensor(np.asarray(features, dtype=np.float32)).reshape(1, -1))
-            k = self.intent_class(torch.softmax(intent, -1)[0].numpy())
+            p = torch.softmax(intent, -1)[0].numpy()
+        k = self.intent_class(p)
         self.last_intent = int(LANE_VALUES[k])
-        return np.array([np.clip(float(steer[0, k]), -1.0, 1.0),
-                         self.throttle_bins[int(throttle.argmax(-1)[0])]], dtype=np.float32)
+        outputs = np.clip(steer[0].numpy(), -1.0, 1.0)
+        steering = float(p @ outputs) if self.steer_blend else float(outputs[k])
+        return np.array([steering, self.throttle_bins[int(throttle.argmax(-1)[0])]], dtype=np.float32)
 
     def set_normalization(self, features: np.ndarray, steering: np.ndarray, intent: np.ndarray) -> None:
         """Input mean/std and the steering labels' spread per intent (-1/0/+1 labels; all labels' spread for an
@@ -276,6 +282,7 @@ class EndToEndModel:
                                                          "intent_threshold": self.intent_threshold,
                                                          "history_steps": HISTORY_STEPS,
                                                          "steer_features": list(self.steer_features or ()),
+                                                         "steer_blend": self.steer_blend,
                                                          "steer_hidden": list(self.steer_hidden)}))
             archive.writestr(E2E_POLICY_ENTRY, buffer.getvalue())
 
@@ -288,7 +295,8 @@ class EndToEndModel:
             raise ValueError(f"{path} was trained with a {meta['history_steps']}-step history")
         model = cls(meta["obs_dim"], tuple(meta["hidden"]), throttle_bins=tuple(meta["throttle_bins"]),
                     intent_threshold=meta["intent_threshold"], steer_features=tuple(meta.get("steer_features") or ()),
-                    steer_hidden=tuple(meta.get("steer_hidden", STEER_HIDDEN)))
+                    steer_hidden=tuple(meta.get("steer_hidden", STEER_HIDDEN)),
+                    steer_blend=meta.get("steer_blend", False))
         model.net.load_state_dict(state)
         return model
 
@@ -300,15 +308,17 @@ def is_end_to_end_model(path) -> bool:
 
 def fit_end_to_end(model: EndToEndModel, obs: np.ndarray, act: np.ndarray, first: np.ndarray, train: np.ndarray,
                    heldout: np.ndarray, epochs: int, seed: int, lr: float = 1e-3, lr_end: float = 5e-5,
-                   batch: int = 512) -> dict:
+                   batch: int = 512, brake_weight: float = 1.0) -> dict:
     """Fit on the stored samples ``train`` (indices): cross-entropy on the intent (act[:, 0] as -1/0/+1), squared
     error of the steering output of the teacher's intent in units of that intent's labels' spread (act[:, 1]), cross-entropy
-    on the throttle level (act[:, 2]). The learning rate falls from lr to lr_end along a cosine over the round.
-    Metrics on the samples ``heldout``, which are never trained on."""
+    on the throttle level (act[:, 2]), in which the hard-braking levels (<= -0.5) weigh ``brake_weight``. The learning
+    rate falls from lr to lr_end along a cosine over the round. Metrics on the samples ``heldout``, which are never
+    trained on."""
     gen = torch.Generator().manual_seed(seed)
     intent = torch.as_tensor(lane_classes(act[:, 0]))
     steer = torch.as_tensor(act[:, 1].astype(np.float32))
     throttle = torch.as_tensor(throttle_classes(act[:, 2], model.throttle_bins))
+    level_weight = torch.as_tensor([brake_weight if b <= -0.5 else 1.0 for b in model.throttle_bins], dtype=torch.float32)
     optimizer = torch.optim.Adam(model.net.parameters(), lr=lr)
     steps = epochs * int(np.ceil(len(train) / batch))
     schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(steps, 1), eta_min=lr_end)
@@ -325,7 +335,7 @@ def fit_end_to_end(model: EndToEndModel, obs: np.ndarray, act: np.ndarray, first
             chosen = steer_out.gather(1, intent[idx][:, None])[:, 0]
             loss = (nn.functional.cross_entropy(intent_logits, intent[idx])
                     + (((chosen - steer[idx]) / scale[intent[idx]]) ** 2).mean()
-                    + nn.functional.cross_entropy(throttle_logits, throttle[idx]))
+                    + nn.functional.cross_entropy(throttle_logits, throttle[idx], weight=level_weight))
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -367,7 +377,8 @@ def end_to_end_metrics(model: EndToEndModel, obs: np.ndarray, act: np.ndarray, f
             "lane_change_recall": float(np.mean(chosen[changes] == truth[changes])) if changes.any() else None,
             "false_lane_changes": float(np.mean((chosen != 1) & keep)),
             "throttle_mae": float(np.mean(np.abs(pedal - pedal_label))),
-            "hard_brake_recall": float(np.mean(pedal[hard] <= -0.5)) if hard.any() else None}
+            "hard_brake_recall": float(np.mean(pedal[hard] <= -0.5)) if hard.any() else None,
+            "false_hard_brakes": float(np.mean(pedal[~hard] <= -0.5)) if (~hard).any() else None}
 
 
 def load_policy(path):

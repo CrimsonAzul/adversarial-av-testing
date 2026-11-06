@@ -273,6 +273,9 @@ def main() -> None:
     p.add_argument("--lane-model", action=argparse.BooleanOptionalAction, default=True,
                    help="e2e only: add the lane model (avtest.sim.lane_model) to the observation; the lane-line beams "
                         "flicker between dashes and gaps (LOG.md, 2026-11-05); the d14 pilot ran without it")
+    p.add_argument("--brake-weight", type=float, default=1.0,
+                   help="e2e only: weight of the hard-braking throttle levels in the cross-entropy (d16: 1; its "
+                        "network caught 55%% of the teacher's hard brakes, LOG.md 2026-11-06)")
     p.add_argument("--steer-net", action=argparse.BooleanOptionalAction, default=True,
                    help="e2e only: steering from its own network on the ego state and lane model "
                         "(avtest.policy.steering_features); the d14 pilot steered from the shared trunk")
@@ -315,6 +318,8 @@ def main() -> None:
                          "history_steps": HISTORY_STEPS, "heldout_every": HELDOUT_EVERY})
         if args.lane_model or args.steer_net:          # absent from the pilot's settings, which had neither
             settings.update({"lane_model": args.lane_model, "steer_net": args.steer_net})
+        if args.brake_weight != 1.0:                   # absent from d16's settings, which had none
+            settings["brake_weight"] = args.brake_weight
     if (out / "bc_config.json").exists() and not same_run(read_json(out / "bc_config.json"), settings):
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -370,7 +375,7 @@ def main() -> None:
                 model.set_normalization(stored_features(obs, first, np.sort(sample)), act[train0, 1], act[train0, 0])
             n_samples = int(len(act))
             fit_stats = fit_end_to_end(model, obs, act, first, np.flatnonzero(~heldout), np.flatnonzero(heldout),
-                                       args.epochs, rnd)
+                                       args.epochs, rnd, brake_weight=args.brake_weight)
             del first, heldout
         else:
             shards = [np.load(out / "data" / f"round_{k:02d}.npz") for k in range(rnd + 1)]

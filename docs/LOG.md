@@ -1435,3 +1435,77 @@ Command, in a terminal tab:
     .venv\Scripts\python.exe -m scripts.pretrain_bc --name d16 --tier all --controller yield_pd --action e2e --rounds 12
 
 This is 13 collections (rounds 0-12) of 600 episodes, each fitted for 20 epochs on all data so far, and validated on 200 T2, 200 T1 and 200 T3 scenes. Expected duration: about 6-7 h; per round about 10 min of collection and 10 min of validation, plus a fit that grows to about 25 min. A watcher reports completion, the end of all Python processes, or 60 minutes without a file change. The app keeps the computer from idle-sleeping while the session is active.
+
+## 2026-11-06 — d16, the end-to-end driver: 99.4 / 96.9 / 89.4% on the dev panels; missed braking traced
+
+**d16** (`--controller yield_pd --action e2e --rounds 12`; 02:45-09:58, 7.2 h, 1,415,265 samples). Validation, 200 scenes per tier:
+
+| Round | T1 | T2 | T3 | Collisions T1 / T2 / T3 | Off-road T1 / T2 / T3 | Held-out lane-keeping steering error |
+|---|---|---|---|---|---|---|
+| 0 | 32.5% | 41.5% | 21% | 82 / 95 / 80 | 39 / 9 / 57 | 0.0057 |
+| 1 | 86% | 82.5% | 63% | 20 / 28 / 52 | 2 / 3 / 9 | 0.0046 |
+| 3 | 97.5% | 91% | 70.5% | 2 / 17 / 43 | 0 / 0 / 3 | 0.0045 |
+| 7 | 99.5% | 90% | 79.5% | 1 / 20 / 33 | 0 / 0 / 0 | 0.0039 |
+| 12 (best) | 99.5% | 91% | 79.5% | 1 / 17 / 37 | 0 / 0 / 0 | 0.0034 |
+
+- Steering is solved: off-road is near zero on every tier.
+- The held-out steering error falls every round, where in both pilots it rose. C3's 0.01 is met from round 0.
+- T2 and T3 validation have plateaued since about round 5.
+- The steering error the log prints (own intent, all steps) rises from 0.013 to 0.022. That is the intent head: on held-out teacher states its lane-change recall falls from 0.91 to 0.80, and its false changes rise from 0.4% to 2.6% of steps. Steering precision does not fall.
+- Round 12: `checkpoints/bc_round_12.zip`, sha256 49eaa62a82bc.
+
+**Attempt-1 dev panels** (environment v2; success over the scenes a 60 km/h reference completes):
+
+| Driver | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| d13 round 7 (tactical network + rule layers) | 100% | 97.6% (Wilson low 0.957; crash 1.5%) | 93.1% (0.902; 13 collisions, 15 stuck) |
+| **d16 round 12 (end-to-end, no rules)** | **99.4%** (0.982; 3 collisions) | **96.9%** (0.949; 11 collisions, 1 off-road, 2 stuck; crash 2.6%) | **89.4%** (0.860; 39 collisions, 1 off-road, 2 stuck, 1 timeout; crash 9.9%) |
+| teacher, `YIELD_PD_CONTROLLER` | 100% | 98.0% | 95.6% |
+
+- The network drives within 0.6, 0.7 and 3.7 points of the rule-assisted d13.
+- It changes lanes about as often as the teacher (1.10 / 1.14 / 0.99 per episode against 1.08 / 1.30 / 1.20).
+- Its failures are mostly other scenes than d13's (T2: 13 only d16, 10 only d13, 1 both).
+- The gap to the gate is collisions: 2.6% on T2 against the 2% limit, and 9.9% on T3.
+
+**Failures traced** (`trace_e2e_crash.py`, session scratchpad: each failed scene replayed with the teacher's label computed at the same states):
+- **Replay:** 7 of the 14 T2 failures and 13 of the 43 T3 failures succeed. Half of T2's failures do not reproduce.
+- **The 30 reproduced T3 failures:**
+  - **Missed braking: 14.** The teacher, at the same states, brakes hard much more often in the last 3 s: 7 for traffic coming from the side, 4 for traffic ahead, 3 for the cut-in vehicle from the side.
+  - 5 struck from behind.
+  - 5 against a warning triangle at walking pace, while the lane intent flips between sides and "keep" and the teacher's stays on one side: the change from a standstill behind a triangle that d13 also failed.
+  - 5 other contacts with traffic.
+  - 1 timeout.
+- **Braking deficit:** over the last 3 s of all reproduced T3 collisions, the teacher's labels hold a hard brake on 380 steps, the network on 169.
+- **On held-out teacher data**, round 12 catches 55% of the teacher's hard brakes and brakes hard on 3.4% of the other steps. The braking is mistimed, not only missing.
+
+**Interventions on d16** (attempt-1 dev panels; success over the scenes a 60 km/h reference completes; collisions in brackets; steering change per step averaged over all 500 scenes):
+
+| Variant | T2 (456) | T3 (405) | Steering change per step, T2 / T3 |
+|---|---|---|---|
+| d16 round 12, intent threshold 0.3 | 96.9% (11) | 89.4% (39) | 0.063 / 0.075 |
+| fine-tune, unweighted: the control (4 epochs on all of d16's data, learning rate 3e-4) | 95.4% (18) | 90.4% (33) | 0.066 / 0.076 |
+| **fine-tune, hard-braking levels weighted ×3** | **97.4%** (8; crash 2.2%) | **91.6%** (28) | 0.066 / 0.079 |
+| fine-tune, steering network without the 24 lane-line beams | 96.1% (17) | 88.9% (41) | 0.063 / 0.072 |
+| intent threshold 0.5 | 96.5% (14) | 90.4% (35) | 0.057 / 0.066 |
+| intent threshold 0.7 | 96.5% (15) | 89.4% (40) | 0.053 / 0.063 |
+| blended steering (intent probabilities mix the three steering outputs) | 95.8% (15) | 88.9% (39) | 0.059 / 0.071 |
+
+**Run-to-run variation is large.** Fine-tuning alone moved T2 by 7 scenes. The default and blended decodings of the same model share 20 of their 43 and 45 T3 failures.
+
+**Brake weight** (`fit_end_to_end(brake_weight=)`, `pretrain_bc --brake-weight`; test: on uncertain synthetic braking it raises recall from 0.16 to 0.67):
+- On held-out teacher data it moves little: hard-brake recall 0.53 → 0.58, false hard brakes 3.5% → 4.6% of steps.
+- In closed loop it beats its control on both tiers: +9 scenes and 10 fewer collisions on T2, +5 scenes and 5 fewer on T3, with no more stuck episodes.
+- **Adopted** for the next run.
+
+**Steering jitter.** d16's steering changes 2.5-3× as much per step as d13's (0.022 on T2, 0.030 on T3). Probed on 10 T1 scenes (`probe_jitter.py`):
+- The lane intent switches on 6.4% of steps. Each switch changes the steering output used, by 0.42 on average, and these switches carry 65% of all steering change.
+- With the intent steady, the steering changes 0.016 per step, against 0.024 for the teacher's labels at the same states.
+- The fixes tested act at decoding time without retraining: a higher intent threshold, and steering blended by intent probability (`EndToEndModel.steer_blend`; `evaluate_controller` setting `0.3:blend`; test added). They cut the steering change per step by at most 16% and do not change success. Rejected; the options stay in the code, off.
+- Removing the lane-line beams from the steering network changes neither. Rejected.
+- The jitter is a comfort issue; these data show no failures caused by it.
+
+**d17** (started about 13:30): d16's settings plus `--brake-weight 3`, trained from scratch so that it compares with d16 by one change:
+
+    .venv\Scripts\python.exe -m scripts.pretrain_bc --name d17 --tier all --controller yield_pd --action e2e --rounds 12 --brake-weight 3
+
+Expected duration: about 7 h, like d16.
