@@ -1623,3 +1623,27 @@ Expected duration: 8-12 h. d16 took 7.2 h at night, and d17 11.5 h with other ap
 - The teacher's car-following throttle is also smoothed with its previous output (`smooth=0.5`). The student cannot see that state, but it decays within 2–3 steps.
 
 **Where imitation stands.** Three DAgger variants (d16: lane model; d17: + brake weight; d18: + object list) reach 87–89% on T3, and their teacher 95.6%. Reaching 94% by imitation alone would need a student within 1.6 points of its teacher. Ours are 6–9 points below, and the gap has not narrowed with more inputs, weighting or rounds.
+
+**Next: PPO fine-tuning of the end-to-end network** (`avtest/finetune.py`, `scripts/finetune_rl.py`). This is my choice of method, within the author's requirements: "fully AI network" and "T3 needs to be atleast 94%".
+
+Imitation scores the network by agreement with labels that flip at braking thresholds. Reinforcement learning scores its own braking by what happens next, so it can also exceed the teacher. The driver stays the network alone, driving with the most likely throttle level and no controller.
+
+- **What is trained.** The throttle/brake output, as a policy over its 9 levels: during training a level is sampled from the throttle logits. Lane intent and steering are decided as when driving and are not explored.
+  - Steering has its own subnetwork, which the throttle loss cannot reach.
+  - Intent shares the trunk with the throttle. Distillation (KL to the imitation network's intent, weight 10) holds it.
+- **Loss.** Clipped PPO (clip 0.2, 4 epochs, epochs stop early past 1.5 × 0.02 approximate KL), plus 0.05 × KL(policy ‖ imitation policy) on the throttle levels. That KL direction lets the policy settle on one of two levels the imitation network found equally likely, as at a braking threshold.
+- **Critic.** A separate 512-512 network on the same inputs, trained alone for the first 8 iterations.
+- **Reward.** The training environment's: progress 0.05/m, speed, success +20, failure −30 (collision, off-road, stuck, timeout). Returns are scaled by 0.1 for the critic. γ 0.99, GAE λ 0.95.
+- **Iteration.** 64 training episodes on 8 workers, tiers T1/T2/T3 drawn 0.2/0.3/0.5.
+- **Validation.** Every 20 iterations, as for imitation rounds: the 200-scene panel as T2, its first 100 as T1, all 200 as T3. `model_best_rl.zip` is the checkpoint with the best mean of the three.
+- **Tests** (`tests/test_finetune.py`, 6, synthetic):
+  - The episode inputs equal the driving frame history.
+  - Sampled actions steer exactly as when driving, and levels are drawn with the policy's probabilities.
+  - GAE equals discounted returns at λ = 1 and the one-step TD errors at λ = 0.
+  - PPO moves braking to the states whose advantage rewards it, while steering stays bit-identical and intent within 0.05.
+  - With zero advantage the policy stays at the imitation policy, and the KL limit stops epochs early.
+  - The critic learns returns (explained variance above 0.9).
+- **Check run** (`--check`, 2 workers, 3 iterations, with a resume after the second):
+  - The log-probabilities recomputed in the learner match the sampled ones to 1e-4.
+  - Distilled steering error 0.
+  - Checkpoints load as ordinary drivers in validation.
