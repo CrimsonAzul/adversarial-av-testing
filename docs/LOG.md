@@ -1581,3 +1581,45 @@ Test (`tests/test_lane_model.py`): the lead vehicle of a lead-brake scene appear
     .venv\Scripts\python.exe -m scripts.pretrain_bc --name d18 --tier all --controller yield_pd --action e2e --rounds 12 --object-list
 
 Expected duration: 8-12 h. d16 took 7.2 h at night, and d17 11.5 h with other applications running.
+
+## 2026-11-07 — d18: the object list does not help; outcomes are not repeatable within a process; the teacher's brake labels flip
+
+**d18** finished at about 13:40 (12.0 h). Its best round, 9, was chosen on mean validation: 91.7%, against d17's 91.0%. Dev panels, `evaluate_controller --settings 0.3:off` (d18 round 9, sha256 `99a26533d8f9…`):
+
+| Driver | T1 (499 solvable) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| **d18 r9** (+ object list) | 99.6% (2 collisions) | 96.5% (13 collisions, 3 stuck) | **86.9%** (47 collisions, 2 off-road, 3 timeouts) |
+| d17 r11 | 99.6% | 97.1% | 89.4% |
+| d16 r12 | 99.4% | 96.9% | 89.4% |
+| PD teacher | 100% | 98.0% | 95.6% |
+
+- On T3 d18 is 2.5 points below d17. That is about one standard error of the difference (2.3 points): no gain, and no proven loss either.
+- **Brake causes** (`brake_causes.py`, the same 120 T3 teacher episodes as for d17):
+  - Predictive braking for side traffic: 23.2% caught on the same step (d17 24%), 74.5% within 0.5 s (d17 77%).
+  - Emergency braking: 49% and 90%.
+  - Car-following: 53% and 92%.
+  - Hard brakes where the teacher does not brake: 6.5% of steps. 48.6% of d18's hard brakes have no teacher hard brake within 1 s.
+- The object list gave the network the inputs of predictive braking, but it did not learn to use them. **Rejected as a fix for T3.**
+
+**Outcomes are not repeatable within a process.**
+- `trace_e2e_crash.py` replayed d18's 53 T3 failures, and 19 of them succeeded.
+- Probe (`probe_determinism.py`, session scratchpad): the same driver drove the same scene twice, back to back, in one environment.
+  - The ego's position differs by about 1e-10 m after the first step.
+  - The other vehicles' observed values differ by about 5e-5 at step 1.
+  - The trajectories end up tens of metres apart.
+  - Row 101 ended in a collision the first time and in a success the second. Rows 53 and 96 diverged by 35 m and succeeded both times.
+- Computing the teacher's label alongside the driver is not the cause: two plain drives diverge the same way.
+- Qualification already showed this. In attempt 1, failures that did not reproduce on replay: 23 of 154 on T3, 7 of 55 on T2, 2 of 22 on T1.
+- Consequences:
+  - For a given driver, a scene's outcome is a random draw. A dev-panel rate is still an unbiased estimate of the driver's success probability on those scenes, with binomial noise of about ±1.5 points at 90% on 405 scenes.
+  - The gate's statistics are unaffected (one draw per scene).
+  - The differences between d16, d17 and d18, and the small overlap of their failure sets, are largely this noise.
+  - A failure replayed for diagnosis reproduces only about two times in three.
+
+**The teacher's brake labels flip on the student's trajectories.**
+- In d18's T3 crash traces, the teacher's throttle label, sampled every 0.5 s over the last 3 s, often switches between full brake and throttle (rows 216, 250, 280, 369).
+- Its emergency and predictive brakes are thresholds on the current state: time to collision below 2.5 s, or a predicted overlap within 3 s. Near a threshold, nearly identical inputs get "brake" or "go".
+- The network learns probabilities near 50% at those states, and its most likely throttle level changes from step to step. It brakes late or releases early: in rows 264, 381 and 442 it brakes for one sample and accelerates while the teacher keeps braking.
+- The teacher's car-following throttle is also smoothed with its previous output (`smooth=0.5`). The student cannot see that state, but it decays within 2–3 steps.
+
+**Where imitation stands.** Three DAgger variants (d16: lane model; d17: + brake weight; d18: + object list) reach 87–89% on T3, and their teacher 95.6%. Reaching 94% by imitation alone would need a student within 1.6 points of its teacher. Ours are 6–9 points below, and the gap has not narrowed with more inputs, weighting or rounds.
