@@ -1657,3 +1657,19 @@ Imitation scores the network by agreement with labels that flip at braking thres
 - The critic's explained variance was 0.82 by the third iteration.
 - Expected duration about 9 h, including 15 validations of about 8 min.
 - When it finishes, the best checkpoint goes onto the T3/T2/T1 dev panels against d17/d18 and the 94% requirement.
+
+**r1 paused** at the author's request, 17:12, after iteration 66. A `STOP` file was used; the run stopped cleanly at an iteration boundary, and the `STOP` file was removed. To continue, run the same command; it resumes from `rl_state.pt`.
+
+Validation so far (200-scene panel, all scenes counted, the most likely throttle level):
+
+| Iteration | T1 (100) | T2 (200) | T3 (200) | T3 collisions |
+|---|---|---|---|---|
+| d18 r9 (start) | 100% | 92.5% | 82.5% | 31 |
+| 20 | 100% | 90.5% | 80.5% | 35 |
+| 40 | 100% | 90.5% | 79.0% | 38 |
+| 60 | 100% | 92.5% | 80.5% | 31 |
+
+- The author saw T3 at 96% in the console. That was the sampled policy's training success on 23 T3 training episodes at iteration 63. Iterations 61 and 62 gave 70% and 69%.
+- Pooled over blocks of iterations, the sampled policy's T3 training success stays flat: 82.6% (iterations 1–8, critic only), 79.8% (9–20), 83.4% (21–40), 79.2% (41–60), 82.4% (61–66).
+- No gain yet after about 1.6M steps. The KL to the imitation policy rose from 0.016 to 0.029, and intent distillation stays at 0.001.
+- Iterations took 1.5–2.0 min, longer than at the start.
