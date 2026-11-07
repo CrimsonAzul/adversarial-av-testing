@@ -1509,3 +1509,37 @@ This is 13 collections (rounds 0-12) of 600 episodes, each fitted for 20 epochs 
     .venv\Scripts\python.exe -m scripts.pretrain_bc --name d17 --tier all --controller yield_pd --action e2e --rounds 12 --brake-weight 3
 
 Expected duration: about 7 h, like d16.
+
+## 2026-11-07 — d17 (brake weight ×3 in training): no gain over d16; the end-to-end driver plateaus
+
+**d17** finished at 23:37 on 2026-11-06 (11.5 h; rounds took 40-94 min against d16's 15-56 min, with other applications running on the computer; no sleep event). Validation, 200 scenes per tier:
+
+| Round | T1 | T2 | T3 | T2 collisions / off-road / stuck | Held-out hard-brake recall | False hard brakes |
+|---|---|---|---|---|---|---|
+| 0 | 37% | 41.5% | 19.5% | 84 / 14 / 19 | 0.55 | 0.5% |
+| 1 | 90% | 79% | 62.5% | 33 / 4 / 5 | 0.61 | 1.0% |
+| 3 | 98.5% | 91.5% | 75.5% | 16 / 0 / 1 | 0.58 | 2.2% |
+| 8 | 100% | 92.5% | 77% | 14 / 0 / 1 | 0.54 | 4.0% |
+| 11 (best) | 98.5% | 93% | 81.5% | 14 / 0 / 0 | 0.53 | 3.8% |
+| 12 | 99% | 93% | 80% | 13 / 0 / 1 | 0.54 | 3.6% |
+
+The weight raises hard-brake recall in the first rounds (0.61 against d16's 0.53), but it returns to d16's level (0.53-0.55) as the student's own states fill the data, while false hard brakes end slightly higher (3.6-3.8% against 3.4%).
+
+**Attempt-1 dev panels** (round 11, sha256 ec548f5347f8; success over the scenes a 60 km/h reference completes):
+
+| Driver | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| d13 round 7 (tactical network + rule layers) | 100% | 97.6% (crash 1.5%) | 93.1% (crash 3.2%) |
+| d16 round 12 (end-to-end) | 99.4% (0.982) | 96.9% (0.949; crash 2.6%) | 89.4% (0.860; crash 9.9%) |
+| **d17 round 11 (end-to-end, brake weight 3)** | **99.6%** (Wilson low 0.986; 2 collisions) | **97.1%** (0.952; 12 collisions, 1 stuck; crash 2.6%) | **89.4%** (0.860; 35 collisions, 5 stuck, 2 off-road, 1 timeout; crash 9.1%) |
+| teacher, `YIELD_PD_CONTROLLER` | 100% | 98.0% | 95.6% |
+
+- d17 equals d16 within the run-to-run variation. Their failures overlap little: T2 9 only d16, 8 only d17, 5 both; T3 23 / 23 / 20.
+- Speed, lane changes and steering change per step are unchanged (T3 0.079 against 0.075).
+- The fine-tune's gain with the same weight (97.4% / 91.6% on T2 / T3, 2026-11-06) did not carry over to training with it from scratch. The fine-tune comparison rested on two models and a variation of about 7 scenes, so it was within noise.
+
+**Where the end-to-end driver stands:**
+- **T1:** it meets the gate's numbers on the dev panel (99.6%, Wilson low 0.986, crash 0.4%).
+- **T2:** it is 0.9 points short of 98% and above the 2% crash limit.
+- **T3:** it is 6 points below the teacher, and collisions dominate.
+- Since about round 5 of both runs, further DAgger rounds have not raised T2 or T3. The student sits 1-6 points below its teacher (98.0% / 95.6% on T2 / T3).
