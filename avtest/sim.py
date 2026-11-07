@@ -77,6 +77,19 @@ LANE_MODEL_AHEAD_M = (0.0, 5.0, 10.0, 20.0, 40.0)
 LANE_MODEL_DIM = 2 * len(LANE_MODEL_AHEAD_M) + 3
 LANE_MODEL_X_M, LANE_MODEL_Y_M, LANE_MODEL_WIDTH_M, LANE_MODEL_LANES = 50.0, 10.0, 10.0, 4.0
 E2E_OBS_DIM = OBS_DIM + LANE_MODEL_DIM
+# Object list (end-to-end drivers from d18; LOG.md 2026-11-07): what a perception tracker and prediction module report.
+# The OBJECT_SLOTS nearest objects the ego's lidar detects within OBJECT_RANGE_M, nearest first: present, is a vehicle,
+# position and heading in the ego's frame, velocity estimated from the position change since the previous step (as
+# the teacher's predictive braking estimates it), and for vehicles the position at OBJECT_PREDICT_S along their own lane
+# (tactical.lane_track, the teacher's prediction). The 4 nearest vehicles of MetaDrive's observation carry no heading
+# and no path, and at junctions the vehicle that matters is often not among them: d17 caught 24% of the teacher's
+# predictive hard brakes on T3 teacher states (77% within 0.5 s).
+OBJECT_SLOTS = 10
+OBJECT_PREDICT_S = (1.5, 3.0)
+OBJECT_VALUES = 8 + 2 * len(OBJECT_PREDICT_S)
+OBJECT_LIST_DIM = OBJECT_SLOTS * OBJECT_VALUES
+OBJECT_RANGE_M, OBJECT_SPEED_MPS = 60.0, 30.0
+E2E_OBJ_OBS_DIM = E2E_OBS_DIM + OBJECT_LIST_DIM
 
 BASE_CONFIG = dict(
     use_render=False, log_level=50, store_map=False, start_seed=0, num_scenarios=seeds.SPLITS["heldout"][1],
@@ -96,6 +109,8 @@ def sensor_config(obs_size: int) -> dict:
     """AVTestEnv config whose observation has ``obs_size`` values: the current sensors plus the lane model
     (end-to-end drivers), the current sensors (d4-d13), or the 240-beam, 50 m lidar of drivers d1–d3, so older
     drivers can still be evaluated and watched."""
+    if obs_size == E2E_OBJ_OBS_DIM:
+        return {"lane_model": True, "object_list": True}
     if obs_size == E2E_OBS_DIM:
         return {"lane_model": True}
     if obs_size == OBS_DIM:
@@ -189,6 +204,49 @@ def lane_model(vehicle, routes: dict) -> np.ndarray:
     values = [(v + 1) / 2 for v in values] + [lane.width / LANE_MODEL_WIDTH_M, left / LANE_MODEL_LANES,
                                               right / LANE_MODEL_LANES]
     return np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
+
+
+def object_list(vehicle, tracks: dict) -> np.ndarray:
+    """The object list (OBJECT_LIST_DIM values in [0, 1]; empty slots all zero). ``tracks`` (object id -> (step,
+    position)) holds the episode's last positions; every detected object within range is updated each step."""
+    from metadrive.component.static_object.traffic_object import TrafficObject
+    from .tactical import lane_track
+    position = np.asarray(vehicle.position, dtype=float)[:2]
+    c, n = math.cos(vehicle.heading_theta), math.sin(vehicle.heading_theta)
+    step = vehicle.engine.episode_step
+
+    def to_ego(v):
+        return np.array([v[0] * c + v[1] * n, -v[0] * n + v[1] * c])
+
+    found = []
+    for obj in vehicle.lidar.get_surrounding_objects(vehicle):
+        if obj is vehicle or not hasattr(obj, "position"):
+            continue
+        here = np.asarray(obj.position, dtype=float)[:2]
+        distance = float(np.linalg.norm(here - position))
+        if distance > OBJECT_RANGE_M:
+            continue
+        seen = tracks.get(obj.id)
+        velocity = ((here - seen[1]) / DT if seen is not None and seen[0] == step - 1
+                    else np.asarray(getattr(obj, "velocity", (0.0, 0.0)), dtype=float)[:2])
+        tracks[obj.id] = (step, here)
+        found.append((distance, obj, here, velocity))
+    found.sort(key=lambda f: f[0])
+    values = np.zeros((OBJECT_SLOTS, OBJECT_VALUES), dtype=np.float32)
+    for k, (_, obj, here, velocity) in enumerate(found[:OBJECT_SLOTS]):
+        moving = hasattr(obj, "speed_km_h") and not isinstance(obj, TrafficObject)
+        rel, vel = to_ego(here - position) / OBJECT_RANGE_M, to_ego(velocity) / OBJECT_SPEED_MPS
+        dh = getattr(obj, "heading_theta", vehicle.heading_theta) - vehicle.heading_theta
+        lane = getattr(obj, "lane", None)
+        if moving and lane is not None:
+            future = lane_track(obj, lane, OBJECT_PREDICT_S, velocity)[0]
+        else:
+            future = np.array([here + (velocity if moving else 0.0) * t for t in OBJECT_PREDICT_S])
+        row = [1.0, float(moving), *(rel + 1) / 2, (math.sin(dh) + 1) / 2, (math.cos(dh) + 1) / 2, *(vel + 1) / 2]
+        for point in future:
+            row += list((to_ego(point - position) / OBJECT_RANGE_M + 1) / 2)
+        values[k] = np.clip(row, 0.0, 1.0)
+    return values.reshape(-1)
 
 
 class EventManager(BaseManager):
@@ -357,7 +415,9 @@ class AVTestEnv(MetaDriveEnv):
     def __init__(self, config: dict | None = None):
         config = dict(config or {})
         self.with_lane_model = bool(config.pop("lane_model", False))  # append lane_model() to every observation
+        self.with_object_list = bool(config.pop("object_list", False))  # then object_list()
         self._routes: dict = {}
+        self._tracks: dict = {}
         super().__init__(dict(BASE_CONFIG, **config))
         self.scenario: sc.Scenario | None = None
         self._positions: list = []
@@ -393,13 +453,16 @@ class AVTestEnv(MetaDriveEnv):
         obs, info = super().reset(seed=self.scenario.map_seed)
         self._positions = [np.asarray(self.agent.position)]
         self.telemetry = {"min_ttc_s": None, "min_edge_margin_m": None, "white_line_steps": 0}
-        self._routes = {}
+        self._routes, self._tracks = {}, {}
         return self._observe(obs), info
 
     def _observe(self, obs):
-        if not self.with_lane_model:
-            return obs
-        return np.concatenate([obs, lane_model(self.agent, self._routes)]).astype(np.float32)
+        parts = [obs]
+        if self.with_lane_model:
+            parts.append(lane_model(self.agent, self._routes))
+        if self.with_object_list:
+            parts.append(object_list(self.agent, self._tracks))
+        return obs if len(parts) == 1 else np.concatenate(parts).astype(np.float32)
 
     def engine_values(self):
         if self.engine is not None and "event_manager" in self.engine.managers:

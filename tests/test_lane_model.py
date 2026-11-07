@@ -60,3 +60,65 @@ def test_lane_model_reports_the_lane_steadily():
         assert np.percentile(np.abs(np.diff(offsets)), 99) < 0.2                   # steady: no beam-like jumps
     finally:
         env.close()
+
+
+def scene_with(event: str, tier: str = "T1", seed: int = 5):
+    rng = np.random.default_rng(seed)
+    while True:
+        scene = sc.decode(sc.sample(rng, 1)[0], seeds.draw(rng, "train"), tier)
+        if scene.values["event"] == event and scene.values["map"][0] == "S":
+            return scene
+
+
+def slot_of(objects, x, y):
+    """The object-list slot nearest to ego-frame position (x, y), as (x, y, vx, vy, predictions) in metres."""
+    from avtest.sim import OBJECT_RANGE_M, OBJECT_SPEED_MPS
+    present = objects[:, 0] > 0.5
+    pos = (objects[:, 2:4] * 2 - 1) * OBJECT_RANGE_M
+    k = int(np.argmin(np.where(present, np.hypot(pos[:, 0] - x, pos[:, 1] - y), np.inf)))
+    row = objects[k]
+    return {"moving": row[1] > 0.5, "pos": pos[k], "cos": row[5] * 2 - 1, "vel": (row[6:8] * 2 - 1) * OBJECT_SPEED_MPS,
+            "future": (row[8:].reshape(-1, 2) * 2 - 1) * OBJECT_RANGE_M}
+
+
+def test_object_list_reports_detected_objects_with_their_motion():
+    """The lead vehicle of a lead-brake scene appears ahead in the ego's lane at its true position, heading the
+    same way, with its tracked speed, and predicted further along its lane; a warning triangle appears as a static
+    object with no motion."""
+    import math
+    from avtest.sim import E2E_OBJ_OBS_DIM, E2E_OBS_DIM, OBJECT_PREDICT_S, OBJECT_SLOTS, OBJECT_VALUES
+    env = AVTestEnv(sensor_config(E2E_OBJ_OBS_DIM))
+    try:
+        for event in ("lead_brake", "obstacle"):
+            env.load(scene_with(event))
+            obs, _ = env.reset()
+            assert obs.shape == (E2E_OBJ_OBS_DIM,)
+            teacher = tactical.TEACHERS["scene_passing_60"](env.agent, env.scenario.map_seed)
+            ctl = tactical.TacticalController(**tactical.YIELD_PD_CONTROLLER)
+            em = env.engine.managers["event_manager"]
+            target = em.npc if event == "lead_brake" else em.warning
+            for step in range(400):                  # until the object is well within the list's 60 m
+                _, acc = teacher.act(env.agent.id)
+                obs, _, term, trunc, _ = env.step(ctl.low_level(env.agent, [tactical.teacher_command(teacher, env.agent),
+                                                                            float(np.clip(acc, -1, 1))]))
+                assert not (term or trunc)
+                d = np.asarray(target.position)[:2] - np.asarray(env.agent.position)[:2]
+                if step >= 20 and np.hypot(*d) < 50:
+                    break
+            assert np.hypot(*d) < 50
+            objects = obs[E2E_OBS_DIM:].reshape(OBJECT_SLOTS, OBJECT_VALUES)
+            ego = env.agent
+            c, n = math.cos(ego.heading_theta), math.sin(ego.heading_theta)
+            x, y = d[0] * c + d[1] * n, -d[0] * n + d[1] * c
+            slot = slot_of(objects, x, y)
+            assert np.allclose(slot["pos"], (x, y), atol=0.05)
+            if event == "lead_brake":
+                speed = target.speed_km_h / 3.6
+                assert slot["moving"] and x > 0 and slot["cos"] > 0.99
+                assert abs(slot["vel"][0] - speed) < 1.0 and abs(slot["vel"][1]) < 1.0
+                assert np.allclose(slot["future"][:, 0], x + speed * np.array(OBJECT_PREDICT_S), atol=2.0)
+            else:
+                assert not slot["moving"] and np.allclose(slot["vel"], 0, atol=0.1)
+                assert np.allclose(slot["future"], [(x, y)] * len(OBJECT_PREDICT_S), atol=0.05)
+    finally:
+        env.close()

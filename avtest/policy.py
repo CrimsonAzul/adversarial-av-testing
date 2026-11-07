@@ -144,9 +144,10 @@ STEER_HIDDEN = (256, 256)
 
 
 def steering_features(obs_dim: int) -> tuple:
-    """The ego-state values and, if the observation has it, the lane model."""
-    from .sim import E2E_OBS_DIM, OBS_DIM
-    return tuple(range(STATE_INPUTS)) + (tuple(range(OBS_DIM, E2E_OBS_DIM)) if obs_dim == E2E_OBS_DIM else ())
+    """The ego-state values and, if the observation has it, the lane model (not the object list after it)."""
+    from .sim import E2E_OBJ_OBS_DIM, E2E_OBS_DIM, OBS_DIM
+    lane = tuple(range(OBS_DIM, E2E_OBS_DIM)) if obs_dim in (E2E_OBS_DIM, E2E_OBJ_OBS_DIM) else ()
+    return tuple(range(STATE_INPUTS)) + lane
 
 
 class FrameHistory:
@@ -224,7 +225,7 @@ class EndToEndModel:
 
     def __init__(self, obs_dim: int, hidden: tuple = E2E_HIDDEN, seed: int = 0, throttle_bins: tuple = THROTTLE_BINS,
                  intent_threshold: float = INTENT_THRESHOLD, steer_features: tuple | None = None,
-                 steer_hidden: tuple = STEER_HIDDEN, steer_blend: bool = False):
+                 steer_hidden: tuple = STEER_HIDDEN, steer_blend: bool = False, throttle_mean: bool = False):
         import gymnasium as gym
         torch.manual_seed(seed)
         self.obs_dim, self.hidden = int(obs_dim), tuple(hidden)
@@ -233,6 +234,10 @@ class EndToEndModel:
         # the decided intent. d16's intent switched on 6.4% of steps, each switch a 0.42 steering jump on average:
         # 65% of all its steering change (LOG.md, 2026-11-06). Training is the same either way.
         self.steer_blend = bool(steer_blend)
+        # throttle_mean: throttle = the probability-weighted mean of the throttle levels, instead of the most likely
+        # level. With the most likely level, d17 braked hard where the teacher did not brake within 1 s on half of its
+        # hard-brake steps on T3 teacher states (LOG.md, 2026-11-07): a 30% braking probability can win a step.
+        self.throttle_mean = bool(throttle_mean)
         self.steer_features = tuple(steer_features) if steer_features else None
         self.steer_hidden = tuple(steer_hidden)
         self.net = EndToEndNet(2 * self.obs_dim, self.hidden, len(self.throttle_bins), self.steer_features,
@@ -261,7 +266,11 @@ class EndToEndModel:
         self.last_intent = int(LANE_VALUES[k])
         outputs = np.clip(steer[0].numpy(), -1.0, 1.0)
         steering = float(p @ outputs) if self.steer_blend else float(outputs[k])
-        return np.array([steering, self.throttle_bins[int(throttle.argmax(-1)[0])]], dtype=np.float32)
+        if self.throttle_mean:
+            pedal = float(torch.softmax(throttle, -1)[0].numpy() @ np.asarray(self.throttle_bins, dtype=np.float32))
+        else:
+            pedal = self.throttle_bins[int(throttle.argmax(-1)[0])]
+        return np.array([steering, pedal], dtype=np.float32)
 
     def set_normalization(self, features: np.ndarray, steering: np.ndarray, intent: np.ndarray) -> None:
         """Input mean/std and the steering labels' spread per intent (-1/0/+1 labels; all labels' spread for an
@@ -283,6 +292,7 @@ class EndToEndModel:
                                                          "history_steps": HISTORY_STEPS,
                                                          "steer_features": list(self.steer_features or ()),
                                                          "steer_blend": self.steer_blend,
+                                                         "throttle_mean": self.throttle_mean,
                                                          "steer_hidden": list(self.steer_hidden)}))
             archive.writestr(E2E_POLICY_ENTRY, buffer.getvalue())
 
@@ -296,7 +306,7 @@ class EndToEndModel:
         model = cls(meta["obs_dim"], tuple(meta["hidden"]), throttle_bins=tuple(meta["throttle_bins"]),
                     intent_threshold=meta["intent_threshold"], steer_features=tuple(meta.get("steer_features") or ()),
                     steer_hidden=tuple(meta.get("steer_hidden", STEER_HIDDEN)),
-                    steer_blend=meta.get("steer_blend", False))
+                    steer_blend=meta.get("steer_blend", False), throttle_mean=meta.get("throttle_mean", False))
         model.net.load_state_dict(state)
         return model
 

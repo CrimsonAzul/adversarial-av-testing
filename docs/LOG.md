@@ -1543,3 +1543,41 @@ The weight raises hard-brake recall in the first rounds (0.61 against d16's 0.53
 - **T2:** it is 0.9 points short of 98% and above the 2% crash limit.
 - **T3:** it is 6 points below the teacher, and collisions dominate.
 - Since about round 5 of both runs, further DAgger rounds have not raised T2 or T3. The student sits 1-6 points below its teacher (98.0% / 95.6% on T2 / T3).
+
+## 2026-11-07 — the author's T3 requirement; which braking the network misses; object list added; d18 started
+
+**Requirement (author, 2026-11-07):** "T3 needs to be atleast 94%". The end-to-end driver is at 89.4% on the T3 dev panel. The teacher it imitates is at 95.6%, and the rule-assisted d13 at 93.1%.
+
+**Which teacher brakes d17 misses** (`brake_causes.py`, session scratchpad: the teacher drives 120 T3 training scenes, 50,118 steps; each of its hard brakes is attributed to its cause, and d17 round 11 decides at the same states with the same inputs):
+
+| Teacher's hard brake caused by | Steps | d17 brakes hard on the same step | within ±0.5 s |
+|---|---|---|---|
+| emergency braking (time to collision, or gap) | 457 | 43% | 87% |
+| predictive braking for traffic from the side (`yield_s`) | 551 | **24%** | **77%** |
+| its own car-following (IDM) | 790 | 52% | 90% |
+
+- On the teacher's escape forward (171 steps), d17 gives full throttle on 49% of them.
+- **Spurious braking:** d17 brakes hard on 6.5% of the steps where the teacher does not. Half of its 3,877 hard-brake steps have no teacher hard brake within ±1 s, about 16 per episode.
+- Most of the miss is timing: the throttle decision flips between levels from step to step.
+- Predictive braking is the worst even with ±0.5 s allowed. Its labels depend on where other vehicles will drive along their own lanes. The observation does not show that: MetaDrive's 4 nearest vehicles have position and velocity but no heading or path, and lidar shows no motion.
+
+**Decoding the throttle as the probability-weighted mean of the levels** (`EndToEndModel.throttle_mean`; `evaluate_controller` setting `0.3:tmean`; test added), d17 round 11 on the dev panels:
+- T3: 90.9% (31 collisions) against 89.4% (35); throttle change per step 0.258 against 0.283.
+- T2: 95.4% (16 collisions, 2 off-road) against 97.1% (12).
+
+The two tiers move in opposite directions by 6 and 8 scenes, within the run-to-run variation. Rejected; the option stays, off.
+
+**Object list** (`avtest.sim.object_list`; 120 values appended after the lane model, 933 inputs; end-to-end drivers only, `pretrain_bc --object-list`). This is what a perception tracker and prediction module report:
+- the 10 nearest objects the ego's lidar detects within 60 m, nearest first;
+- for each, whether it is a vehicle, its position and heading in the ego's frame, and its velocity from its position change since the previous step (as the teacher's predictive braking estimates it);
+- for vehicles, its predicted position at 1.5 s and 3 s along its own lane (`tactical.lane_track`, the teacher's own prediction).
+
+The teacher's predictive braking then depends on inputs the network has. The steering network does not see the object list.
+
+Test (`tests/test_lane_model.py`): the lead vehicle of a lead-brake scene appears at its true position within 5 cm, heading the same way, with its speed within 1 m/s and its predicted positions within 2 m; a warning triangle appears as a static object with no motion. Objects beyond 60 m are left out. Qualification accepts the 933-input observation. 71 tests pass; `pretrain_bc --name d18 --tier all --controller yield_pd --action e2e --object-list --check` ran end to end.
+
+**d18** started at about 03:05: d16's settings plus the object list, one change. No brake weighting, since d17 showed no gain from it.
+
+    .venv\Scripts\python.exe -m scripts.pretrain_bc --name d18 --tier all --controller yield_pd --action e2e --rounds 12 --object-list
+
+Expected duration: 8-12 h. d16 took 7.2 h at night, and d17 11.5 h with other applications running.

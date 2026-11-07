@@ -323,3 +323,22 @@ def test_end_to_end_steering_can_blend_the_intent_outputs(tmp_path):
     assert np.isclose(model.act_features(features)[0], p @ outputs, atol=1e-6)
     model.save(tmp_path / "b.zip")
     assert load_policy(tmp_path / "b.zip").steer_blend
+
+
+def test_end_to_end_throttle_can_be_the_mean_level(tmp_path):
+    """throttle_mean: the throttle is the probability-weighted mean of the levels, not the most likely level; saved
+    with the model."""
+    import torch
+    from avtest.policy import EndToEndModel, load_policy, stored_features
+    obs, act, first = end_to_end_data(50, 10, 5)
+    model = EndToEndModel(8, (16,))
+    model.set_normalization(stored_features(obs, first, np.arange(len(obs))), act[:, 1], act[:, 0])
+    features = stored_features(obs, first, np.arange(1))[0]
+    with torch.no_grad():
+        q = torch.softmax(model.net(torch.as_tensor(features).reshape(1, -1))[2], -1)[0].numpy()
+    bins = np.asarray(model.throttle_bins, dtype=np.float32)
+    assert np.isclose(model.act_features(features)[1], bins[q.argmax()])
+    model.throttle_mean = True
+    assert np.isclose(model.act_features(features)[1], q @ bins, atol=1e-6)
+    model.save(tmp_path / "m.zip")
+    assert load_policy(tmp_path / "m.zip").throttle_mean

@@ -95,10 +95,10 @@ def _collect(task: dict) -> dict:
     from avtest import scenario as sc, seeds
     from avtest import tactical
     from avtest.policy import FrameHistory, load_policy
-    from avtest.sim import E2E_OBS_DIM, OBS_DIM, AVTestEnv, sensor_config
+    from avtest.sim import E2E_OBJ_OBS_DIM, E2E_OBS_DIM, OBS_DIM, AVTestEnv, sensor_config
     rng = np.random.default_rng(task["seed"])
     e2e = task.get("action", "tactical") == "e2e"
-    obs_dim = E2E_OBS_DIM if task.get("lane_model") else OBS_DIM
+    obs_dim = (E2E_OBJ_OBS_DIM if task.get("object_list") else E2E_OBS_DIM) if task.get("lane_model") else OBS_DIM
     env = AVTestEnv(sensor_config(obs_dim))
     student = load_policy(task["model"]) if task["model"] else None
     obs_list, act_list, first_list, outcomes = [], [], [], []
@@ -273,6 +273,9 @@ def main() -> None:
     p.add_argument("--lane-model", action=argparse.BooleanOptionalAction, default=True,
                    help="e2e only: add the lane model (avtest.sim.lane_model) to the observation; the lane-line beams "
                         "flicker between dashes and gaps (LOG.md, 2026-11-05); the d14 pilot ran without it")
+    p.add_argument("--object-list", action=argparse.BooleanOptionalAction, default=False,
+                   help="e2e with --lane-model only: add the object list (avtest.sim.object_list: the 10 nearest "
+                        "objects with heading, tracked velocity and their predicted path; from d18)")
     p.add_argument("--brake-weight", type=float, default=1.0,
                    help="e2e only: weight of the hard-braking throttle levels in the cross-entropy (d16: 1; its "
                         "network caught 55%% of the teacher's hard brakes, LOG.md 2026-11-06)")
@@ -320,6 +323,10 @@ def main() -> None:
             settings.update({"lane_model": args.lane_model, "steer_net": args.steer_net})
         if args.brake_weight != 1.0:                   # absent from d16's settings, which had none
             settings["brake_weight"] = args.brake_weight
+        if args.object_list:                           # absent from d16's and d17's settings
+            if not args.lane_model:
+                raise SystemExit("--object-list needs --lane-model")
+            settings["object_list"] = True
     if (out / "bc_config.json").exists() and not same_run(read_json(out / "bc_config.json"), settings):
         raise SystemExit(f"{out} was started with other settings; use a new --name")
     write_json(out / "bc_config.json", settings)
@@ -336,8 +343,8 @@ def main() -> None:
         print(f"resuming after round {done_rounds[-1]}", flush=True)
     elif e2e:
         from avtest.policy import steering_features
-        from avtest.sim import E2E_OBS_DIM
-        obs_dim = E2E_OBS_DIM if args.lane_model else OBS_DIM
+        from avtest.sim import E2E_OBJ_OBS_DIM, E2E_OBS_DIM
+        obs_dim = (E2E_OBJ_OBS_DIM if args.object_list else E2E_OBS_DIM) if args.lane_model else OBS_DIM
         model = EndToEndModel(obs_dim, hidden, seed=DEFAULTS["seed"],
                               steer_features=steering_features(obs_dim) if args.steer_net else None)
     elif args.head == "classify":
@@ -358,7 +365,7 @@ def main() -> None:
         per = max(1, args.episodes // args.workers)
         tasks = [{"seed": 10_000 * rnd + w, "episodes": per, "model": current, "beta": 0.5 ** rnd, "teacher": args.teacher,
                   "tier": args.tier, "controller": controller, "action": args.action, "dart": args.dart,
-                  "lane_model": e2e and args.lane_model}
+                  "lane_model": e2e and args.lane_model, "object_list": e2e and args.object_list}
                  for w in range(args.workers)]
         with ctx.Pool(args.workers) as pool:
             results = pool.map(_collect, tasks)

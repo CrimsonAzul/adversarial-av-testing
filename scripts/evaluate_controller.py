@@ -62,12 +62,13 @@ def run(task: dict) -> dict:
     elif _worker["sut"].end_to_end:              # no controller: the setting's threshold is the intent threshold;
         driver = _worker["sut"]                  # "<threshold>:blend" mixes the steering outputs by intent probability
         mode = task["setting"].split("+")[0].split(":")[1]
-        if task["commit"] or task.get("extra") or mode not in ("off", "blend"):
+        if task["commit"] or task.get("extra") or mode not in ("off", "blend", "tmean"):
             raise ValueError(f"{task['setting']}: an end-to-end driver has no controller to change")
         driver.model.intent_threshold = task["threshold"]
         driver.model.steer_blend = mode == "blend"
-    elif task["setting"].split("+")[0].endswith(":blend"):
-        raise ValueError(f"{task['setting']}: blend is for end-to-end drivers")
+        driver.model.throttle_mean = mode == "tmean"                # "<threshold>:tmean": mean throttle level
+    elif task["setting"].split("+")[0].split(":")[1] in ("blend", "tmean"):
+        raise ValueError(f"{task['setting']}: blend and tmean are for end-to-end drivers")
     else:
         driver = _worker["sut"]
         driver.controller = TacticalController(**controller_settings(driver.controller_settings, task["threshold"],
