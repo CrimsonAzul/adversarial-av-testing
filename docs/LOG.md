@@ -1576,7 +1576,7 @@ The teacher's predictive braking then depends on inputs the network has. The ste
 
 Test (`tests/test_lane_model.py`): the lead vehicle of a lead-brake scene appears at its true position within 5 cm, heading the same way, with its speed within 1 m/s and its predicted positions within 2 m; a warning triangle appears as a static object with no motion. Objects beyond 60 m are left out. Qualification accepts the 933-input observation. 71 tests pass; `pretrain_bc --name d18 --tier all --controller yield_pd --action e2e --object-list --check` ran end to end.
 
-**d18** started at about 03:05: d16's settings plus the object list, one change. No brake weighting, since d17 showed no gain from it.
+**d18** started at 01:40: d16's settings plus the object list, one change. No brake weighting, since d17 showed no gain from it.
 
     .venv\Scripts\python.exe -m scripts.pretrain_bc --name d18 --tier all --controller yield_pd --action e2e --rounds 12 --object-list
 
