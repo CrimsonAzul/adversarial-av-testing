@@ -1658,7 +1658,7 @@ Imitation scores the network by agreement with labels that flip at braking thres
 - Expected duration about 9 h, including 15 validations of about 8 min.
 - When it finishes, the best checkpoint goes onto the T3/T2/T1 dev panels against d17/d18 and the 94% requirement.
 
-**r1 paused** at the author's request, 17:12, after iteration 66. A `STOP` file was used; the run stopped cleanly at an iteration boundary, and the `STOP` file was removed. To continue, run the same command; it resumes from `rl_state.pt`.
+**r1 paused** at the author's request, 17:11, after iteration 66. A `STOP` file was used; the run stopped cleanly at an iteration boundary, and the `STOP` file was removed. To continue, run the same command; it resumes from `rl_state.pt`.
 
 Validation so far (200-scene panel, all scenes counted, the most likely throttle level):
 
