@@ -1647,3 +1647,13 @@ Imitation scores the network by agreement with labels that flip at braking thres
   - The log-probabilities recomputed in the learner match the sampled ones to 1e-4.
   - Distilled steering error 0.
   - Checkpoints load as ordinary drivers in validation.
+
+**r1** started at 14:38. It fine-tunes d18 round 9 (`runs/driver/d18/model_best_bc.zip`): learning rate 3e-5 (critic 3e-4), 8 critic-only iterations, then PPO, 300 iterations.
+
+    .venv\Scripts\python.exe -m scripts.finetune_rl --name r1 --init runs\driver\d18\model_best_bc.zip --lr 3e-5 --critic-warmup 8
+
+- First iterations: about 24,000 steps and 1.4 min each, 6–7 of them collecting.
+- The sampled policy's training success on T3 was 78%, 83% and 97% (27–30 episodes each). The most likely level gives 82.5% on the T3 validation panel, so sampling the throttle does not make the policy much worse to start from.
+- The critic's explained variance was 0.82 by the third iteration.
+- Expected duration about 9 h, including 15 validations of about 8 min.
+- When it finishes, the best checkpoint goes onto the T3/T2/T1 dev panels against d17/d18 and the 94% requirement.
