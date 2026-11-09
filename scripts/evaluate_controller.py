@@ -110,7 +110,7 @@ def main() -> None:
     for item in args.settings.split(","):
         base, *extras = item.split("+")                 # e.g. 0.5:off+smooth=0.5+debounce=3
         first, second = base.split(":")
-        extra = {k: float(v) if k in ("smooth", "aeb_ttc", "lc_guard_m", "steer_ref_kmh", "yield_s", "lat_cap_kmh") else int(v)
+        extra = {k: float(v) if k in ("smooth", "aeb_ttc", "lc_guard_m", "steer_ref_kmh", "yield_s", "lat_cap_kmh", "brake_hold") else int(v)
                  for k, v in (e.split("=") for e in extras)}            # route_steer=1
         settings.append((item, None, False, second, extra) if first in ("teacher", "driver")
                         else (item, float(first), second == "on", None, extra))

@@ -54,6 +54,9 @@ YIELD_CONTROLLER = {**GUARD_CONTROLLER, "lat_cap_kmh": 30.0, "yield_s": 3.0, "yi
 # episodes fell from 0.014 to 0.009; the teacher scored 100 / 98.0 / 95.6% on the T1 / T2 / T3 dev panels against
 # 99.8 / 97.4 / 96.5% with them (LOG.md, 2026-11-06).
 YIELD_PD_CONTROLLER = {**YIELD_CONTROLLER, "integral": False}
+# d19: YIELD_PD_CONTROLLER whose emergency and predictive brakes, once braking, hold until the danger is 1 s past
+# their thresholds (brake_hold; LOG.md, 2026-11-09)
+BRAKE_HOLD_CONTROLLER = {**YIELD_PD_CONTROLLER, "brake_hold": 1.0}
 # From d14 (author's decision, LOG.md 2026-11-05): an end-to-end network (avtest.policy.EndToEndModel) whose steering
 # and throttle go to the simulator unchanged. Recorded in its model file in place of a controller.
 END_TO_END = {"end_to_end": True}
@@ -112,7 +115,8 @@ class TacticalController:
                  hold_lane: bool = False, smooth: float | None = None, debounce: int = 0,
                  aeb_ttc: float | None = None, lc_guard_m: float | None = None, route_steer: bool = False,
                  steer_ref_kmh: float | None = None, yield_s: float | None = None, lat_cap_kmh: float | None = None,
-                 yield_accel: bool = False, side_guard: bool = False, integral: bool = True):
+                 yield_accel: bool = False, side_guard: bool = False, integral: bool = True,
+                 brake_hold: float | None = None):
         """``smooth``: throttle/brake becomes smooth * previous + (1 - smooth) * command. ``debounce``: a new lane
         direction (left/keep/right) applies only after it has been commanded for this many steps in a row.
         Both against d6's visible vibration (LOG.md, 2026-11-03); off by default.
@@ -169,12 +173,20 @@ class TacticalController:
         from a network that sees only the current state, yet on lane keeping above 40 km/h it made 0.015 of the
         teacher's mean steering of 0.021, growing over an episode. Off, the end-to-end student's steering labels
         depend only on what it can observe (LOG.md, 2026-11-05).
+
+        ``brake_hold`` (seconds; with aeb_ttc / yield_s): once the vehicle braked hard at its last step (the throttle
+        it last applied, which MetaDrive's observation reports), the emergency and predictive brakes keep braking
+        until the time to collision, or to the predicted conflict, exceeds its threshold by this much. Without it
+        both brakes are thresholds on the current state: near a threshold the teacher's label flips between full
+        brake and go from step to step on the student's trajectories, and the end-to-end student learned ~50% there
+        and braked late or released early (LOG.md, 2026-11-07). The hold depends only on what the student observes.
         """
         self.threshold, self.commit, self.lat_cap, self.hold_lane = threshold, commit, lat_cap, hold_lane
         self.smooth, self.debounce, self.aeb_ttc, self.lc_guard_m = smooth, debounce, aeb_ttc, lc_guard_m
         self.route_steer, self.steer_ref_kmh, self.yield_s = route_steer, steer_ref_kmh, yield_s
         self.lat_cap_kmh, self.yield_accel, self.side_guard = lat_cap_kmh, yield_accel, side_guard
         self.integral = integral
+        self.brake_hold = brake_hold
         self.reset()
 
     def reset(self):
@@ -237,6 +249,7 @@ class TacticalController:
         return self.goal[1] if self.goal is not None else self.home
 
     AEB_HOLD_GAP_M = 1.5
+    HARD_BRAKE = -0.5          # brake_hold: a last applied throttle at or below this was hard braking
 
     @staticmethod
     def time_to_collision(vehicle, lookahead_m: float = 40.0, margin_m: float = 0.3) -> tuple[float, float]:
@@ -443,15 +456,17 @@ class TacticalController:
         if self.smooth is not None:
             self.throttle = action[1] = self.smooth * self.throttle + (1 - self.smooth) * action[1]
         emergency = False
+        held = self.brake_hold is not None and float(vehicle.last_current_action[-1][1]) <= self.HARD_BRAKE
+        extra = self.brake_hold if held else 0.0
         if self.aeb_ttc is not None:
             ttc, gap = self.time_to_collision(vehicle)
-            if ttc < self.aeb_ttc or gap < self.AEB_HOLD_GAP_M:
+            if ttc < self.aeb_ttc + extra or gap < self.AEB_HOLD_GAP_M:
                 action[1] = -1.0                       # brake fully; hold it while something is right ahead
                 emergency = True
             self.last_ttc, self.last_gap = ttc, gap
         if self.yield_s is not None:
             self.last_yield, self.last_escape = self.predicted_conflict(vehicle, self.yield_s)
-            if self.last_yield < self.yield_s:
+            if self.last_yield < self.yield_s + extra:
                 action[1] = -1.0
             elif self.last_escape < self.yield_s and not emergency:
                 action[1] = 1.0
