@@ -1716,7 +1716,7 @@ Validation (200-scene panel, all scenes counted, the most likely throttle level)
 
 ## 2026-11-09 — r2 (PPO pilot with bigger steps): no gain either
 
-r2 finished all 80 iterations (4.09M steps); `rl_done.json` is from about 11:28. Validation (200-scene panel, all scenes counted, the most likely throttle level):
+r2 finished all 80 iterations (4.09M steps); `rl_done.json` is from 11:07. Validation (200-scene panel, all scenes counted, the most likely throttle level):
 
 | | T1 | T2 | T3 | T3 collisions | KL to imitation |
 |---|---|---|---|---|---|
