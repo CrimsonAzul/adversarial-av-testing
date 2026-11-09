@@ -1673,3 +1673,26 @@ Validation so far (200-scene panel, all scenes counted, the most likely throttle
 - Pooled over blocks of iterations, the sampled policy's T3 training success stays flat: 82.6% (iterations 1–8, critic only), 79.8% (9–20), 83.4% (21–40), 79.2% (41–60), 82.4% (61–66).
 - No gain yet after about 1.6M steps. The KL to the imitation policy rose from 0.016 to 0.029, and intent distillation stays at 0.001.
 - Iterations took 1.5–2.0 min, longer than at the start.
+
+## 2026-11-09 — r1 (PPO fine-tuning) ended at iteration 259 when the laptop was switched off: no gain
+
+The author resumed r1 at about 20:04 on 2026-11-07. The laptop was switched off during the night: the last files are from 00:44 on 2026-11-08. At that point iteration 260 had been trained and saved as a checkpoint, and its validation was running. `rl_state.pt` holds iteration 259, and `rl_log.jsonl` has 259 iterations (6.48M steps) of the planned 300.
+
+Validation (200-scene panel, all scenes counted, the most likely throttle level), every 20 iterations:
+
+| | T1 | T2 | T3 | T3 collisions |
+|---|---|---|---|---|
+| d18 r9 (start) | 100% | 92.5% | 82.5% | 31 |
+| r1, iterations 20–240 (12 checkpoints) | 99–100% | 90.0–92.5% | 77.5–81.5% | 31–38 |
+
+- No checkpoint beat the start on T3. The best by mean validation is still iteration 60 (91.0%).
+- Training is flat as well:
+  - The sampled policy's T3 training success was 82.2, 80.8, 82.1, 81.2, 81.6, 82.6 and 83.3% over successive blocks of 40 iterations.
+  - The mean return stayed at 32.3–32.9.
+- The policy barely moved:
+  - The KL to the imitation policy reached only 0.035.
+  - The mean approximate KL per update was 0.0055, against a 0.02 target.
+  - The clip fraction was 0.04.
+  - Intent distillation stayed at 0.001.
+- The critic explained 0.82 of the return's variance. Iterations took 1.1–1.2 min at night.
+- Conclusion: at this step size (learning rate 3e-5, KL coefficient 0.05, 64 episodes per iteration), PPO does not improve the driver in 6.5M steps. The remaining 41 iterations are not worth running.
