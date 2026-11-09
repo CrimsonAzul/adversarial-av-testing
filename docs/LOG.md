@@ -1713,3 +1713,22 @@ Validation (200-scene panel, all scenes counted, the most likely throttle level)
   - KL to the imitation policy 0.010, then 0.014 (r1 took 20 iterations to reach 0.016).
 - Expected to end at about 11:20.
 - The question it answers: does T3 validation rise above the start's 82.5% when the policy is allowed to move?
+
+## 2026-11-09 — r2 (PPO pilot with bigger steps): no gain either
+
+r2 finished all 80 iterations (4.09M steps); `rl_done.json` is from about 11:28. Validation (200-scene panel, all scenes counted, the most likely throttle level):
+
+| | T1 | T2 | T3 | T3 collisions | KL to imitation |
+|---|---|---|---|---|---|
+| d18 r9 (start) | 100% | 92.5% | 82.5% | 31 | 0 |
+| iteration 20 | 100% | 90.5% | 77.0% | 40 | 0.054 |
+| iteration 40 | 100% | 90.5% | 80.5% | 33 | 0.077 |
+| iteration 60 | 100% | 89.5% | 80.5% | 32 | 0.132 |
+| iteration 80 | 99% | 90.5% | 79.5% | 36 | 0.133 |
+
+- **Training does not improve either.** The sampled policy's T3 training success over blocks of 10 iterations (about 900 T3 episodes each) was 80.5, 83.4, 77.9, 83.3, 83.8, 80.4, 83.9 and 82.8%, and the mean return stayed between 28.5 and 31.7.
+- This time the policy moved: the KL to the imitation policy reached 0.13, four times r1's. Step size was therefore not what held r1 back.
+- The reward does penalise collisions: −30 for any crash (`crash_vehicle_penalty`, `crash_object_penalty`, out of road), checked against MetaDrive's `reward_function`.
+- No checkpoint beat the start, so none went onto the dev panels.
+
+**Conclusion.** PPO fine-tuning of the throttle policy has not reduced T3 collisions, at either step size, in 6.5M + 4.1M steps.
