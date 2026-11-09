@@ -1732,3 +1732,35 @@ r2 finished all 80 iterations (4.09M steps); `rl_done.json` is from 11:07. Valid
 - No checkpoint beat the start, so none went onto the dev panels.
 
 **Conclusion.** PPO fine-tuning of the throttle policy has not reduced T3 collisions, at either step size, in 6.5M + 4.1M steps.
+
+## 2026-11-09 — one last T3 attempt (author): a teacher whose braking holds; d19 started
+
+**Decision (author):** "One last T3 attempt", before qualifying by 14 November.
+
+**Teacher brake hold** (`TacticalController(brake_hold=1.0)`, `tactical.BRAKE_HOLD_CONTROLLER` = YIELD_PD_CONTROLLER + `brake_hold`). It addresses the cause found on 2026-11-07, where the teacher's brake labels flip at their thresholds.
+- Once the vehicle braked hard at its last step (last applied throttle ≤ −0.5), the emergency brake holds until the time to collision exceeds 2.5 + 1 = 3.5 s.
+- Likewise, the predictive brake holds until the predicted conflict is more than 3 + 1 = 4 s away.
+- The last applied throttle is what MetaDrive's observation reports as value 28 (`last_current_action[-1][1]`). Under DAgger it is the student's own last action, so the hold depends only on what the student observes.
+- Tests (`tests/test_brake_hold.py`, real vehicle):
+  - Observation value 28 equals (last applied throttle + 1) / 2.
+  - Both holds apply only after hard braking, and only within 1 s past their thresholds.
+  - The d16–d18 teacher has no hold, and the thresholds themselves are unchanged.
+
+**The holding teacher on the dev panels**, against the PD teacher (YIELD_PD_CONTROLLER) that taught d16–d18:
+
+| Teacher | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| PD (d16–d18) | 100% | 98.0% (6 collisions, 3 stuck) | 95.6% (15 collisions, 3 stuck) |
+| PD + brake hold (d19) | 100% | 97.1% (10 collisions, 3 stuck) | 96.5% (13 collisions, 1 stuck) |
+
+- The differences (T3 +4 scenes, T2 −4) are within the run-to-run variation.
+- Throttle change per step is 12–17% lower on every tier (T3 0.061 against 0.069).
+- Speed is unchanged.
+
+**d19** started at 13:29: d16's settings with the holding teacher, one change (no object list, no brake weight). `--check` ran end to end, and its configuration records `brake_hold: 1.0`.
+
+    .venv\Scripts\python.exe -m scripts.pretrain_bc --name d19 --tier all --controller brake_hold --action e2e --rounds 12
+
+- Expected duration 8–12 h (d16 7.2 h, d18 12 h).
+- If the laptop is switched off, the same command continues after the last finished round.
+- Then: its best round on the T3/T2/T1 dev panels against d16/d17 and the 94% requirement, and qualification attempt 3 with the author's OK.
