@@ -1696,3 +1696,20 @@ Validation (200-scene panel, all scenes counted, the most likely throttle level)
   - Intent distillation stayed at 0.001.
 - The critic explained 0.82 of the return's variance. Iterations took 1.1–1.2 min at night.
 - Conclusion: at this step size (learning rate 3e-5, KL coefficient 0.05, 64 episodes per iteration), PPO does not improve the driver in 6.5M steps. The remaining 41 iterations are not worth running.
+
+**r2: PPO pilot with bigger steps** (author: "Yes, run the pilot"). Started at about 08:05, from d18 round 9 again. Changes from r1:
+- learning rate 1e-4 (r1 3e-5);
+- KL coefficient 0.01 (0.05);
+- 128 episodes per iteration (64);
+- tiers T1/T2/T3 drawn 0.1/0.2/0.7 (0.2/0.3/0.5);
+- 5 critic-only iterations (8);
+- 80 iterations, validated every 20.
+
+    .venv\Scripts\python.exe -m scripts.finetune_rl --name r2 --init runs\driver\d18\model_best_bc.zip --lr 1e-4 --kl-coef 0.01 --episodes 128 --tiers T1:0.1,T2:0.2,T3:0.7 --critic-warmup 5 --iterations 80
+
+- Iterations take about 2 min (50,000–55,000 steps each).
+- In the first two PPO iterations the KL limit stopped the epochs after 2 of 4:
+  - approximate KL per update 0.012 and 0.008 (r1's mean: 0.0055);
+  - KL to the imitation policy 0.010, then 0.014 (r1 took 20 iterations to reach 0.016).
+- Expected to end at about 11:20.
+- The question it answers: does T3 validation rise above the start's 82.5% when the policy is allowed to move?
