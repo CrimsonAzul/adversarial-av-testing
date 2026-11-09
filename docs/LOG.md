@@ -1764,3 +1764,19 @@ r2 finished all 80 iterations (4.09M steps); `rl_done.json` is from 11:07. Valid
 - Expected duration 8–12 h (d16 7.2 h, d18 12 h).
 - If the laptop is switched off, the same command continues after the last finished round.
 - Then: its best round on the T3/T2/T1 dev panels against d16/d17 and the 94% requirement, and qualification attempt 3 with the author's OK.
+
+**d19 interrupted and resumed.**
+- The Claude app restarted at about 21:00 and closed d19's terminal.
+- By then rounds 0–10 were finished and logged (round 10 at 20:44). Round 11's data had been collected (20:53) and was being fitted.
+- `model_last.zip` and the log both stop at round 10. The run resumed at 21:05 with the same command ("resuming after round 10"): it collects round 11 again, then runs round 12.
+
+Validation so far (200-scene panel, all scenes counted), next to d17 and d18 at the same rounds:
+
+| Round | d19 T3 | d19 mean of T1/T2/T3 | d17 T3 | d18 T3 |
+|---|---|---|---|---|
+| 7 | 77.5% | 89.7% | 76.5% | 76.5% |
+| 8 | 77.0% | 89.7% | 77.0% | 80.5% |
+| 9 | 77.0% | 90.0% | 79.0% | 82.5% |
+| 10 | 78.5% | 89.7% | 80.0% | 79.0% |
+
+So far d19's validation is in the same range as d17 and d18. The dev panels decide.
