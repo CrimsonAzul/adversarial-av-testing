@@ -1814,7 +1814,7 @@ Every end-to-end driver reaches 86.9–89.4% on T3, 95.8–97.1% on T2 and 99.4�
 
 - Expected from the dev panels: T3 and T2 fail; T1 passes if d17 holds its dev-panel 99.6% (Wilson 0.986, crashes 0.4%) on the new panel.
 
-**Attempt 3, T3: FAIL** (finished at about 02:20; T2 is running).
+**Attempt 3, T3: FAIL** (finished at 02:25; T2 is running).
 - 344 of 382 reference-solvable scenes = **90.1%**, Wilson [0.866, 0.927]. Collisions or off-road on 8.9% (33 collisions, 1 off-road, 4 stuck).
 - The gate needs ≥ 98%, Wilson ≥ 0.96 and crashes ≤ 2%.
 - The fresh panel confirms the dev-panel estimate (89.4%): selecting d17 on the attempt-1 panels did not inflate it.
