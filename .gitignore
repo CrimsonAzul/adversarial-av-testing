@@ -7,5 +7,6 @@ runs/
 *.zip
 *.mp4
 *.gif
+!docs/assets/*.gif
 STOP
 PAUSE
