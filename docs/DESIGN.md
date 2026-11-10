@@ -31,7 +31,9 @@ The ODD has three nested tiers, declared now:
 | T2 | + on/off ramps, merges | 0 – 0.15 | + cut-in |
 | T3 | + intersections, roundabouts | 0 – 0.20 | all |
 
-The driver is trained on T2 (decision 2026-11-01, after the reference ceiling check in LOG.md: the privileged reference drivers together complete only 77.5% of random T3 scenes, and the best single one only 81% of those any reference solves, so no driver can be shown to reach the gate on T3). Qualification still tests T3, then T2, then T1. The thesis uses the **widest tier that passes qualification**, chosen by the rule below before any adversary is run.
+The driver was first trained on T2 (decision 2026-11-01, after the reference ceiling check in LOG.md: the privileged reference drivers of the time together completed only 77.5% of random T3 scenes). From run d13 on it trains on all three tiers, each episode's tier drawn uniformly (the author requires a driver that is good on every tier; LOG.md, 2026-11-05). Qualification tests T3, then T2, then T1. The thesis uses the **widest tier that passes qualification**, chosen by the rule below before any adversary is run.
+
+**Result (qualification attempt 3, 2026-11-10; [QUALIFICATION.md](QUALIFICATION.md)):** T3 failed (90.1% of 382 solvable scenes, 8.9% crashes) and T2 failed (96.7% of 455, 3.3% crashes). T1 passed: 99.4% of 496, Wilson lower bound 0.982, 0.4% crashes. **The ODD is T1**, and the adversary study runs on T1.
 
 ## SUT qualification gate
 
@@ -43,30 +45,72 @@ A held-out panel of 500 scenarios per tier, drawn uniformly from θ with map see
 
 ## Driver (SUT)
 
-The SUT is a **learned tactical planner with a classical tracking controller**, the split used by modular driving stacks:
-- The learned part, an MLP policy (256×256), outputs a lane command (left / keep / right, thresholds ±0.5) and throttle/brake. It therefore makes every decision the adversarial events probe: when to brake, how fast to go, and when to change lanes.
-- Steering comes from the lane-tracking PID controller of MetaDrive's IDM and `LaneChangePolicy` (heading PID 1.7/0.01/3.5, lateral PID 0.3/0.002/0.05), aimed at the commanded lane (`avtest/tactical.py`).
-- The policy plus the controller is the system under test.
+The qualified SUT is **d17, imitation round 11** (`models/sut.zip`, sha256 `ec548f5347f8…`; `models/QUALIFIED.json`). It is an **end-to-end neural network**: its steering and throttle/brake go to the simulator unchanged, with no controller or rule acting on them (author's decision, LOG.md 2026-11-05: "fully AI network"). Its network and training are in `avtest/policy.py` (`EndToEndModel`, `fit_end_to_end`) and `scripts/pretrain_bc.py --action e2e`.
 
-Reason (LOG.md, 2026-11-01): an end-to-end student that also learned steering wove across its lane and left the road in 40% of validation scenes (pilot 1: 31% success). With the controller, the same imitation budget gave 85% with 1% off-road (pilot 2).
+**Observation (813 values, each in [0, 1]):**
+- MetaDrive's 720-beam lidar (100 m);
+- a 24-beam road-edge detector (50 m) and a 24-beam lane-line detector (20 m);
+- the 4 nearest vehicles' relative position and velocity;
+- 10 navigation values;
+- 6 ego values: heading to the lane, speed, steering, last applied steering and throttle, yaw rate;
+- a 13-value **lane model** (`avtest/sim.lane_model`): the lane centre 0, 5, 10, 20 and 40 m ahead in the ego's frame, the lane width, and the lanes to each side. This is what a lane-detection camera reports, and it does not flicker as the lane-line beams do between dashes.
 
-The observation (320 values) consists of:
-- MetaDrive's 240-beam lidar, ego state and navigation;
-- a 24-beam lane-line detector and a 24-beam road-edge detector (lane markings and kerbs);
-- an object list of the 4 nearest vehicles, with relative position and velocity.
+The network sees each observation together with its change over the last 0.2 s (`FrameHistory`), so 1,626 inputs, standardised with the first round's data.
 
-That is the kind of object-level and lane-level output a real perception stack hands a planner.
+**Network** (1,470,735 parameters):
+- A SiLU trunk of 3 × 512 with two heads:
+  - lane intent (left / keep / right). A side is chosen when P(left) − P(right) passes ±0.3.
+  - throttle/brake as 9 levels (−1, −0.7, −0.35, −0.12, 0, 0.12, 0.35, 0.7, 1). The most likely level is used.
+- Steering comes from a separate 2 × 256 network on the 77 ego-state and lane values (and their changes), not on the lidar. It gives one steering value per intent, and the chosen intent picks which is used, so a state in which the teacher sometimes changes lane is not averaged into steering between lanes.
 
-It is trained in two stages:
+**Teacher.** The labels come from a rule-based teacher that reads privileged simulator state: the map, the route, and every vehicle's exact position and velocity.
+- **Planner:** `tactical.ScenePassingTeacher60`, MetaDrive's IDM at a 60 km/h cruise with curve slowing. It passes stopped objects, and vehicles far below its cruise speed, as soon as the next lane is clear.
+- **Controller:** `tactical.YIELD_PD_CONTROLLER`:
+  - PD steering along the route, with no integral term, whose sum the student could not observe;
+  - full braking when the time to collision is below 2.5 s or the gap below 1.5 m;
+  - full braking for a vehicle predicted to cross the ego's path within 3 s, and the escape forward when only accelerating avoids it;
+  - lane-change guards for blocked lanes and vehicles alongside;
+  - throttle smoothing 0.5.
 
-1. **Imitation warm start (DAgger).** The cautious-IDM reference, which reads privileged map state, labels every visited state with the lane it steers for (left/keep/right of the ego's current lane) and its throttle/brake. Driving through the same controller with only these labels, the teacher succeeds exactly as often as with full control (40/42). The student drives from round 1 on: 5 rounds after the teacher round, 600 episodes each, over T2, every 2nd step kept, and episodes the teacher drove and failed are discarded, so the student never imitates a crash. The actor's mean output is regressed onto the labels by mean squared error, with lane-change samples (about 2% of steps) weighted 10×, so the student learns when to change lanes. PPO starts from the round with the best validation, not the last one, with exploration noise σ = e^−1.5 ≈ 0.22. Reason: PPO from scratch on lidar typically reaches 60–80% success in MetaDrive with traffic, far below the gate, and the deadline allows about four nights of training. Disclosure: the teacher is also a reference driver. Avoidability needs any one of three references, so this cannot make a failure look valid; it can make the SUT share some of the teacher's blind spots.
-2. **PPO fine-tuning** (Stable-Baselines3) with uniform θ over T2 at full difficulty, on train-split seeds. A curriculum on event intensity, offset and relative speed applies only when training from scratch: after the warm start an easy curriculum taught the driver to speed (pilot 3; LOG.md, 2026-11-01). After the warm start, the first 300k steps train only the value network with the policy frozen, because updates driven by an untrained critic can undo imitation; afterwards small, conservative updates (learning rate 3e-5, 5 epochs, clip 0.1, `target_kl` 0.01) keep PPO refining the warm start instead of overwriting it. Run d1's larger steps (1e-4, 10 epochs, clip 0.2, 0.02) did not.
+Its labels are its final steering and throttle and the side it steered for. On the attempt-1 dev panels it completes 100 / 98.0 / 95.6% on T1 / T2 / T3.
 
-Reward: 0.05 per metre of progress, scaled by a lane-centring factor (about 15–20 for a whole route); 0.02 per step at maximum speed, so the driver does not creep into timeouts; +20 for arriving; −30 for every failure (collision, off-road, stuck, timeout). A crash therefore always outweighs the progress made before it. Run d1 used 1 point per metre against a 10-point crash penalty, so speed paid more than safety (LOG.md, 2026-11-01). `tests/test_sim.py` checks on a real scene that a safe success out-scores a reckless crash and a stuck driver. Checkpoints are selected on a fixed validation panel (val split, 200 scenes, every 1M steps and after every imitation round), never on the qualification panel. Training writes resumable checkpoints so it runs in overnight sessions. Progress is recorded on three fixed showcase scenarios (one per event type) at every validation, so the recordings show the same situations improving.
+Disclosure: the teacher is built on the same IDM as two of the reference drivers. Avoidability needs any one of three references, so this cannot make a failure look valid; it can make the SUT share some of the teacher's blind spots.
+
+**Training: DAgger imitation** (LOG.md, 2026-11-05 to 2026-11-06):
+- Round 0: the teacher drives 600 episodes. Rounds 1–12: 600 episodes each, the teacher driving a share 0.5^round of them and the student the rest. The teacher labels every state either way.
+- In half of the teacher's episodes its steering gets correlated noise (DART, σ = 0.02), so the data shows its corrections. Episodes the teacher fails are discarded. Every 2nd step is kept, and the data of all rounds is aggregated (1.4M samples by round 12).
+- Each round fits 20 epochs: Adam, learning rate 1e-3 falling to 5e-5 along a cosine, batch 512.
+- Loss: cross-entropy on the intent; squared steering error in units of each intent's label spread; cross-entropy on the throttle level, with the hard-braking levels weighted 3.
+- Every episode's tier is drawn from T1 / T2 / T3.
+- After every round the student is validated on the fixed 200-scene validation panel (val split) as T1, T2 and T3. The round with the best mean is kept, never chosen on a qualification panel. Training took 11.6 h, resumable after any round.
+
+**What was tried and not adopted** (LOG.md):
+- **The earlier designs.**
+  - d1–d7: Stable-Baselines3 PPO policies after an imitation warm start; from d4 on, their lane command and throttle went through the PID tracking controller.
+  - d8–d13: an imitation-trained tactical planner (classified lane command and throttle) over the PID tracking controller, with an emergency-braking layer from d10, lane-change guards from d11 and predictive braking for side traffic from d13. d13 reached 100 / 97.6 / 93.1% on the dev panels, but with rules acting on the network's outputs.
+- **More inputs, a learnable brake label, brake weighting:** d18 added an object list of the 10 nearest objects with headings and predicted paths; d19 imitated a teacher whose braking holds until 1 s past its thresholds. Neither improved T3 beyond 86.9–89.4%.
+- **PPO fine-tuning** of the end-to-end network's throttle policy, at two step sizes (r1, r2; `avtest/finetune.py`, `scripts/finetune_rl.py`): 10.6M steps without a gain on T3.
+
+**Environment reward** (used by the PPO experiments; the qualified driver is trained by imitation alone):
+- 0.05 per metre of progress, scaled by a lane-centring factor;
+- 0.02 per step at maximum speed;
+- +20 for arriving;
+- −30 for every failure (collision, off-road, stuck, timeout).
+
+A crash therefore always outweighs the progress made before it (`tests/test_sim.py`).
+
+**Environment version.** From 2026-11-10 (environment v3), MetaDrive destroys every object between episodes instead of recycling it. Recycled vehicles carried physics state into the next episode, so the same driver on the same scene could end differently depending on what the process had run before. Every episode now starts from the same simulator state (`tests/test_sim.py`).
 
 ## Reference drivers and validity
 
-The reference drivers are MetaDrive's IDM policy (with lane changes, 30 km/h), a cautious IDM variant (20 km/h, larger gap and headway), and MetaDrive's bundled PPO expert. Calibration on 48 random T2 scenes (`scripts/calibrate_references.py`; [LOG.md](LOG.md), 2026-10-31): at least one reference completed 97.9% of them. Individually, cautious IDM completed 95.8%, IDM 83.3% and the expert 52.1%. A scenario is **avoidable** if any reference completes it (arrives at the destination without collision or leaving the road). A **valid failure** is a SUT failure (collision, off-road, or no progress for 10 s) in an avoidable scenario, reproduced on one replay with the same seed. Unavoidable SUT failures are counted in RQ2 and never as discoveries.
+The reference drivers, from 2026-11-02 when the driver's cruise speed became 60 km/h, are:
+- MetaDrive's IDM with lane changes at 60 km/h, slowing for curves (`drivers.RoadIDMDriver`);
+- a cautious variant of it, with a larger gap and headway (`drivers.CautiousRoadIDMDriver`);
+- MetaDrive's bundled PPO expert.
+
+Qualification attempt 1 used the original 30 and 20 km/h IDM drivers with the same expert. Calibration of those on 48 random T2 scenes (`scripts/calibrate_references.py`; [LOG.md](LOG.md), 2026-10-31): at least one completed 97.9% of them.
+
+A scenario is **avoidable** if any reference completes it (arrives at the destination without collision or leaving the road). A **valid failure** is a SUT failure (collision, off-road, or no progress for 10 s) in an avoidable scenario, reproduced on one replay with the same seed. In environment v3 every episode starts from the same simulator state, so a replay repeats the episode exactly. Unavoidable SUT failures are counted in RQ2 and never as discoveries.
 
 ## Adversaries (equal budget)
 
@@ -86,6 +130,8 @@ Per seed: the discovery curve (unique valid failures vs. evaluations). Report me
 ## Integrity rules
 
 - Qualification and RQ4 panels are hashed when created; any later change is detected.
+- The frozen SUT is checked against its recorded hash and controller before every search run (`drivers.qualified_sut`).
+- Every episode starts from the same simulator state (objects destroyed between episodes, environment v3), so an episode's outcome does not depend on what ran before it in the same process.
 - Every episode is a JSON record (scenario, driver, outcome, metrics, timing). All tables and figures regenerate from these records with one command.
 - Long jobs are resumable, with a PAUSE file (stop at the next safe point) and a STOP file (stop now).
 - Simulator results do not establish real-world safety.

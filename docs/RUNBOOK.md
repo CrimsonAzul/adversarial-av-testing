@@ -6,24 +6,20 @@ Before an overnight run: charger in, lid open, sleep set to Never on AC power, a
 
 Times are measured on this laptop (about 80 simulator steps/s per process with traffic).
 
-## Suggested schedule (deadline: end of November)
+## Schedule (deadline: end of November)
 
-| When | Step | Time |
+| When | Step | Status |
 |---|---|---|
-| Night 1 (d1, done) | first attempt: far below the gate; reward error fixed | — |
-| Night 2 | 1a imitation warm start (d2, 5 rounds), then 1b PPO `--hours 5` | ~2.5 h + 5–6 h |
-| Nights 2–4 | 1b PPO (same command each night) | 8 h each |
-| ~Nov 5 | 2 qualification | 1 h per tier tested |
-| If it fails | more 1b, then 2 with `--attempt 2` | until Nov 14 at the latest (DESIGN.md rule) |
-| Next 2 nights | 3 search runs | ~12 h total |
-| Then | 4 RQ4 + report | ~1.5 h |
+| Nov 1–9 | 1 driver training (runs d1–d19, r1–r2) | done: d17, imitation round 11 |
+| Nov 10 | 2 qualification, attempt 3 | done: T3 and T2 failed, T1 passed; d17 frozen |
+| From Nov 11 | 3 search runs, 40 runs (10 seeds × 4 methods) | about 12–20 h, several sessions |
+| Then | 4 RQ4 + report | about 1.5–2 h |
 
 ## Where to watch progress
 
 | Stage | Look at | Updated |
 |---|---|---|
-| Imitation warm start | `runs/driver/d2/bc_progress.png`, `recordings/bc_round_XX/*.gif` | every round |
-| PPO training | `runs/driver/d2/progress.png`, `recordings/steps_XXXXXXXXXX/*.gif` | every 1M steps |
+| Driver imitation | `runs/driver/<name>/bc_progress.png`, `recordings/bc_round_XX/*.gif` | every round |
 | Search runs | `runs/search/<method>_s<seed>/progress.png`, `recordings/eval_XXXX_sut.gif` + the reference that avoided it | every 50 evaluations / each new kind of failure |
 | RL generator learning | `runs/search/rl_s<seed>/rl/updates.jsonl` (also the 3rd panel of its progress.png) | every PPO update (24 evaluations) |
 
@@ -35,29 +31,30 @@ The three driver showcase GIFs (lead_brake, obstacle, cut_in) are the same scena
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## 1a. Imitation warm start (about 3 hours, once)
+## 1. Train the driver (done: d17)
+
+The qualified driver was trained with:
 
 ```powershell
-.\.venv\Scripts\python.exe -m scripts.pretrain_bc --name d2
+.\.venv\Scripts\python.exe -m scripts.pretrain_bc --name d17 --tier all --controller yield_pd --action e2e --rounds 12 --brake-weight 3
 ```
 
-Each round prints the action error and validation success on the 200-scene T2 panel, overall and per event, plus success on 100 T1 scenes (the tier most likely to qualify). Rising validation means the warm start is working. If it is interrupted, the same command resumes at the last finished round. At the end the best round is saved as `runs/driver/d2/model_last.zip`, PPO's starting point.
+It runs DAgger imitation of the 60 km/h teacher: round 0 and 12 student rounds of 600 episodes, each episode's tier drawn from T1/T2/T3. Each round prints:
+- the steering error;
+- validation success on the 200-scene panel as T2, overall and per event;
+- validation success on the same panel as T1 and as T3.
 
-## 1b. PPO training (several nights)
+If it is interrupted, the same command resumes after the last finished round. At the end the round with the best mean validation is saved as `runs/driver/d17/model_best_bc.zip`. d17 took 11.6 h. PPO training (`scripts.train_driver`) and PPO fine-tuning (`scripts.finetune_rl`) were tried and not adopted (LOG.md).
+
+## 2. Qualify the driver (done: attempt 3)
 
 ```powershell
-.\.venv\Scripts\python.exe -m scripts.train_driver --name d2 --hours 8
+.\.venv\Scripts\python.exe -m scripts.qualify --model runs\driver\d17\model_best_bc.zip --attempt 3 --workers 8
 ```
 
-It continues from the warm start: first 300k steps of value-network warm-up (printed as "critic warm-up"), then PPO. Every 1M steps it prints training and validation success and keeps the best checkpoint as `runs/driver/d2/model_best.zip`. Measured in pilot 3b (warm start, full difficulty, 6 environments): about 356 steps/s, so 1M steps take about 47 minutes plus a few minutes of validation, and a 5-hour session is about 5–6M steps. Repeat each night until validation success is clearly above 98% or has levelled off.
+Attempt 3, with 8 workers, took 57 min for T3, 25 min for T2 and 17 min for T1.
 
-## 2. Qualify the driver (about 1.5–2 hours for all three tiers)
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.qualify --model runs\driver\d2\model_best.zip --attempt 1
-```
-
-This prints PASS or FAIL for T3, then T2, then T1, stopping at the first PASS, and appends to `docs/QUALIFICATION.md`. Progress is printed every 20 scenes. If it is interrupted, repeat the same command with the same `--attempt`: it continues where it stopped. The dry run of 2026-11-02 measured about 20 s per T3 scene, 17 s per T2 scene and 10 s per T1 scene on one process, so with 4 workers expect roughly 40, 35 and 20 minutes. A PASS writes `models/QUALIFIED.json` and `models/sut.zip`, which become the frozen SUT for everything that follows. On a FAIL at every tier, train more (1b) and re-test with `--attempt 2`; never reuse an attempt number.
+This prints PASS or FAIL for T3, then T2, then T1, stopping at the first PASS, and appends to `docs/QUALIFICATION.md`. Progress is printed every 20 scenes. If it is interrupted, repeat the same command with the same `--attempt`: it continues where it stopped. A PASS writes `models/QUALIFIED.json` and `models/sut.zip`, which become the frozen SUT for everything that follows. On a FAIL at every tier, train more (step 1) and re-test with a new `--attempt`; never reuse an attempt number.
 
 ## 3. Search runs (40 runs: 10 seeds × 4 methods, about 70 min per seed on T1)
 
