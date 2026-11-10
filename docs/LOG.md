@@ -1922,3 +1922,15 @@ That totals 19.7 min per 1,000-evaluation run.
 That makes about 70 min per seed for the four methods, so the preregistered 3 seeds take about 3.5–4 h. A method that finds many failures costs more: each failure adds a replay and up to 3 reference episodes. With a 20% failure rate, simulation time roughly doubles, so a realistic range is 4–6 h for 3 seeds.
 
 The budget was sized for "overnight sessions" (DESIGN.md). It may be revised only from measured timing, before any comparison run; that decision is the author's.
+
+**Decision (author, 2026-11-10): 10 seeds per method instead of 3**, before any comparison run ("Yes, 10 seeds"). No study run exists yet: `runs/search` has not been created.
+- Seeds 101, 202, …, 909, 1010, at 1,000 evaluations per run as before.
+- Reason, from the measured timing above: one seed of the four methods takes about 70 min on T1. The frozen SUT's T1 failures are rare (the three from qualification do not occur from a clean start). With 3 seeds the intervals would be wide and each run would find few failures.
+- Expected: about 12–20 h, in several resumable sessions. Runs are interleaved by seed, so an interrupted campaign always has complete matched seeds.
+
+Changed:
+- `scripts/run_search.py`: `SEEDS` is 101 × 1…10. The docstring now gives the actual method order (random, cmaes, bo, rl).
+- `scripts/rq4.py`: imports the same `SEEDS`, one RQ4 comparison per search seed (300 + 300 evaluations each).
+- `scripts/report.py`: the note on interval stability no longer says "3 seeds".
+- `docs/DESIGN.md` (budgets, with the original plan and the reason for the revision; statistics), `docs/RUNBOOK.md` (step 3, with the measured times) and `README.md` (pipeline line 4).
+- `tests/test_search.py`: 6 pass.

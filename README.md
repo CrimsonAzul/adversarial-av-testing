@@ -14,7 +14,7 @@ Capstone project. A driving policy (a learned tactical planner over a PID tracki
 1  imitation warm start (DAgger from cautious IDM)
 2  PPO training, overnight sessions
 3  qualification gate: ≥98% on 500 held-out scenes, widest passing ODD tier, frozen SUT
-4  search runs: rl / cmaes / bo / random × seeds 101, 202, 303, 1,000 evaluations each
+4  search runs: rl / cmaes / bo / random × 10 seeds (101, 202, …, 1010), 1,000 evaluations each
 5  RQ4: frozen RL generator vs random on held-out map seeds
 6  scripts.report: tables and figures rebuilt from the logs
 ```

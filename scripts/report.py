@@ -86,7 +86,7 @@ def search_tables(runs: dict, out: Path, budget: int) -> list[str]:
             diff = [stats.auc(runs["rl"][s]["rows"], budget) - stats.auc(runs[best][s]["rows"], budget) for s in matched]
             lines.append(f"- **Primary contrast** rl − {best} (best baseline by mean AUC), seeds {matched}: "
                          f"AUC {fmt(stats.bootstrap_mean(diff))}")
-    lines.append("\nWith 3 seeds the bootstrap intervals are unstable; per-seed values above are the primary evidence.")
+    lines.append("\nPer-seed values are shown above; with few seeds the bootstrap intervals are unstable.")
     return lines
 
 

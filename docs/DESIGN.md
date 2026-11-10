@@ -77,11 +77,11 @@ All methods search the same θ space through the same evaluator and are charged 
 - **BO:** Gaussian process (Matérn 5/2 + noise) with expected improvement, 20 random initial points, kernel hyperparameters re-optimised every 10 evaluations (fixed in between), the GP refit on at most 400 points before every proposal, batch proposals via kriging believer.
 - **RL adversary (contribution):** PPO generator that proposes θ given a coverage-and-history observation. Reward: a bounded failure-severity score (valid failure = 1, otherwise near-miss shaping from minimum time-to-collision and route completion), a novelty bonus for unexplored parameter cells, and a penalty for unavoidable proposals. The same continuous severity score is the objective for CMA-ES and BO, so all methods optimise the same quantity.
 
-Budgets: 1,000 evaluations per run, 3 seeds per method (101, 202, 303). This is sized for overnight sessions before the end-of-November deadline and is revised only from measured timing, before any comparison run.
+Budgets: 1,000 evaluations per run, 10 seeds per method (101, 202, …, 909, 1010). The plan was 3 seeds (101, 202, 303), sized for overnight sessions, to be revised only from measured timing before any comparison run. Revised on 2026-11-10 (author's decision; [LOG.md](LOG.md)): on T1 with the frozen SUT, one seed of the four methods takes about 70 minutes (BO's own computation about 20 of them), and the SUT's T1 failures are rare, so 10 seeds fit the schedule and narrow the intervals. Budget per run unchanged.
 
 ## Statistics
 
-Per seed: the discovery curve (unique valid failures vs. evaluations). Report mean and 95% bootstrap intervals over seeds for differences against random and between adversaries. With 3 seeds the intervals are wide, so individual seeds are always shown. The primary contrast is RL vs. the best baseline on RQ1. Uniqueness and clustering rules are fixed in `avtest/analysis.py` before results exist.
+Per seed: the discovery curve (unique valid failures vs. evaluations). Report mean and 95% bootstrap intervals over seeds for differences against random and between adversaries. Individual seeds are always shown alongside the intervals. The primary contrast is RL vs. the best baseline on RQ1. Uniqueness and clustering rules are fixed in `avtest/analysis.py` before results exist.
 
 ## Integrity rules
 

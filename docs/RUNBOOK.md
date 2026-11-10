@@ -59,13 +59,13 @@ It continues from the warm start: first 300k steps of value-network warm-up (pri
 
 This prints PASS or FAIL for T3, then T2, then T1, stopping at the first PASS, and appends to `docs/QUALIFICATION.md`. Progress is printed every 20 scenes. If it is interrupted, repeat the same command with the same `--attempt`: it continues where it stopped. The dry run of 2026-11-02 measured about 20 s per T3 scene, 17 s per T2 scene and 10 s per T1 scene on one process, so with 4 workers expect roughly 40, 35 and 20 minutes. A PASS writes `models/QUALIFIED.json` and `models/sut.zip`, which become the frozen SUT for everything that follows. On a FAIL at every tier, train more (1b) and re-test with `--attempt 2`; never reuse an attempt number.
 
-## 3. Search runs (12 runs, about 45–60 min each)
+## 3. Search runs (40 runs: 10 seeds × 4 methods, about 70 min per seed on T1)
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.run_search --hours 8
 ```
 
-It runs seed 101 for rl, cmaes, bo and random, then seed 202, then 303, skipping finished runs and continuing unfinished ones.
+It runs seed 101 for random, cmaes, bo and rl, then seed 202, and so on to 1010, skipping finished runs and continuing unfinished ones. Measured on 2026-11-10: about 11 min for random, 9 for CMA-ES, 34 for BO (20 of them its own computation) and 15–19 for RL per 1,000-evaluation run, more when a method finds many failures. `--hours 8` stops after about 6–7 seeds; repeat the command to continue.
 
 ## 4. RQ4 and the report
 

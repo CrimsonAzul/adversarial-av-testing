@@ -20,7 +20,7 @@ from avtest.drivers import qualified_sut
 from avtest.records import JsonlLog, ROOT, write_json
 from avtest.search import map_seed_list
 
-SEEDS = (101, 202, 303)
+from scripts.run_search import SEEDS  # noqa: E402  (one RQ4 comparison per search seed)
 BUDGET = 300
 
 

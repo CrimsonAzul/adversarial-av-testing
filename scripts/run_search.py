@@ -3,7 +3,7 @@
     .venv\\Scripts\\python.exe -m scripts.run_search --hours 8
     .venv\\Scripts\\python.exe -m scripts.run_search --check          # 2 tiny runs on the check model
 
-Order: seed 101 for rl, cmaes, bo, random; then 202; then 303. Interleaving by seed means
+Order: seed 101 for every method (random, cmaes, bo, rl); then 202; and so on to 1010. Interleaving by seed means
 an interrupted campaign always has complete matched seeds. Finished runs are skipped,
 unfinished ones continue. Runs refuse to start without models/QUALIFIED.json (the gate).
 """
@@ -19,7 +19,9 @@ from avtest.adversaries import METHODS
 from avtest.drivers import qualified_sut
 from avtest.records import ROOT
 
-SEEDS = (101, 202, 303)
+# 10 seeds from 2026-11-10 (author's decision, from measured timing, before any comparison run; LOG.md): 3 were
+# planned, but a seed of the four methods takes about 70 min on T1, and T1 failures of the frozen SUT are rare.
+SEEDS = tuple(101 * k for k in range(1, 11))          # 101, 202, ..., 909, 1010
 BUDGET = 1000
 
 
