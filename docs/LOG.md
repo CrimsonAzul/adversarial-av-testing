@@ -1880,3 +1880,45 @@ Every number comes from the run logs and the code. It reports attempt 3 with T1 
 - The 3 avoidable T1 failures of attempt 3 (rows 18 off-road, 106 off-road, 396 stuck) all succeed when the SUT drives them in v3. Each replay is identical to its first drive.
 - These failures came from the state left by earlier episodes in the worker: d17 is marginal there, and a perturbation of 1e-10 m decided the outcome.
 - The attempt-3 result stands as measured (v2, `QUALIFICATION.md`). In v3 every scene has one outcome per driver, so a replay always reproduces it. The adversary study counts failures that happen from a clean start.
+
+## 2026-11-10 — search timing on T1 with the frozen SUT, before any comparison run
+
+**Setup.** `time_search.py` (session scratchpad) calls `avtest.search.run` exactly as `scripts.run_search` does:
+- the frozen SUT (`models/sut.zip`) on its qualified tier T1, environment v3, 4 workers (the RUNBOOK command's default, so batch 4);
+- run seeds 7 and 8 (not the study's 101/202/303), in `runs/search_timing`, with no recordings;
+- 48 evaluations per method. Each run was paused by a session deadline, then resumed with the same call.
+
+Failure counts from these runs are not results. They are not used for anything.
+
+**All four methods work end to end** with the end-to-end SUT. Every ledger has exactly evaluations 0–47 in order after the pause and resume:
+- random paused after 40 evaluations;
+- BO after 32;
+- CMA-ES after 12;
+- RL after 24, a full PPO update.
+
+**Simulator time** per evaluation, 4 workers (SUT episode, plus replay and references when the SUT fails):
+
+| Method | s per evaluation | SUT episode, mean s | Adversary's own time |
+|---|---|---|---|
+| random | 0.66 | 1.4 | 0 |
+| CMA-ES | 0.44–0.59 | 1.2–1.5 | 0.1 s |
+| BO | 0.84 | 2.3 | 0.9 s at 48 points |
+| RL | 0.80–1.06 | 1.9–2.3 | 0.4–0.5 s |
+
+**BO's own time grows with its data** (`bo_cost.py`: synthetic scores, one process). Per batch of 4 proposals:
+- 0.3 s for the first 100 points;
+- 3.0 s at 200–300;
+- 5.5 s at 300–400;
+- 9.1 s at 900–1,000, with single batches up to 42 s.
+
+That totals 19.7 min per 1,000-evaluation run.
+
+**Estimate per 1,000-evaluation run:**
+- random about 11 min;
+- CMA-ES about 9 min;
+- BO about 14 min of simulation plus 20 min of its own;
+- RL about 15–19 min.
+
+That makes about 70 min per seed for the four methods, so the preregistered 3 seeds take about 3.5–4 h. A method that finds many failures costs more: each failure adds a replay and up to 3 reference episodes. With a 20% failure rate, simulation time roughly doubles, so a realistic range is 4–6 h for 3 seeds.
+
+The budget was sized for "overnight sessions" (DESIGN.md). It may be revised only from measured timing, before any comparison run; that decision is the author's.
