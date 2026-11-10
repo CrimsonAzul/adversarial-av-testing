@@ -1835,3 +1835,25 @@ Every end-to-end driver reaches 86.9–89.4% on T3, 95.8–97.1% on T2 and 99.4�
 - the results so far, and the T3 attempts.
 
 Every number comes from the run logs and the code. It reports attempt 3 with T1 still running, and will be rebuilt with the T1 result. The source and build script are in the session scratchpad; the PDF is not committed.
+
+## 2026-11-10 — qualification attempt 3: T1 PASS; d17 is the frozen SUT
+
+**T1: PASS** (result written at 03:07).
+- 493 of 496 reference-solvable scenes = **99.4%**, Wilson [0.982, 0.998]. Collisions or off-road on 0.4% (2 off-road, 1 stuck, no collisions).
+- Under the tier rule (T3 and T2 failed), T1 is the ODD. `scripts/qualify.py` froze d17 round 11:
+  - `models/QUALIFIED.json`: tier T1, attempt 3, sha256 `ec548f5347f8…`, controller `{"end_to_end": true}`, 813 inputs;
+  - `models/sut.zip`: same hash; `*.zip` is git-ignored, so the hash in QUALIFIED.json is the record.
+- Attempt 3 overall: T3 90.1%, T2 96.7%, T1 99.4%. Each is within a point of the attempt-1 dev panels (89.4 / 97.1 / 99.6%).
+
+**Failure replays do not reproduce, and that empties the "valid failure" count.**
+- A valid failure must be avoidable and reproduce on one replay (DESIGN.md, `avtest/evaluate.py`). In attempt 3:
+
+| Tier | Avoidable SUT failures | Reproduced on replay (valid) |
+|---|---|---|
+| T3 | 38 | 24 |
+| T2 | 15 | 2 |
+| T1 | 3 | 0 |
+
+- This is the within-process non-repeatability found on 2026-11-07.
+- On the frozen T1 driver, none of the qualification failures would count as discoveries. The adversary study (RQ1–RQ3) counts valid failures, so it depends on replays being repeatable.
+- Whatever MetaDrive carries between episodes has to be found and reset, or each episode and its replay must run from an identical simulator state, before any comparison run.

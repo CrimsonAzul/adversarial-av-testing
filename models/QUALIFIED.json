@@ -1,0 +1,32 @@
+{
+  "attempt": 3,
+  "controller": {
+    "end_to_end": true
+  },
+  "model_sha256": "ec548f5347f88dd5b8552f9a2d6c9fe2cd91cc5ba1d323ea64237ffdf90e3db3",
+  "obs_size": 813,
+  "result": {
+    "collision_offroad_rate": 0.004032258064516129,
+    "outcomes": {
+      "collision": 0,
+      "offroad": 2,
+      "stuck": 1,
+      "success": 493,
+      "timeout": 0
+    },
+    "passed": true,
+    "reference_solvable": 496,
+    "scenes": 500,
+    "success_rate": 0.9939516129032258,
+    "sut_success": 493,
+    "sut_success_on_unsolvable": 3,
+    "unsolvable_scenes": 4,
+    "wilson_95": [
+      0.9823699248365351,
+      0.9979409144365542
+    ]
+  },
+  "source": "runs\\driver\\d17\\model_best_bc.zip",
+  "tier": "T1",
+  "utc": "2026-11-10T03:07:23.203923+00:00"
+}
