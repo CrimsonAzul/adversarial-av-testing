@@ -28,11 +28,35 @@ def scene(event: str, **fixed) -> sc.Scenario:
 def test_episode_replays_identically(env):
     s = scene("cut_in")
     a, b = run_episode(env, s, IDMDriver()), run_episode(env, s, IDMDriver())
-    exact = ("outcome", "steps", "event_triggered_step")
-    assert {k: a[k] for k in exact} == {k: b[k] for k in exact}
-    # Bullet physics is not bit-exact across resets (~1e-6 relative); the replay check compares outcomes
-    for k in ("min_ttc_s", "min_edge_margin_m"):
-        assert (a[k] is None and b[k] is None) or a[k] == pytest.approx(b[k], rel=1e-3, abs=1e-3)
+    # with objects destroyed between episodes (force_destroy) a replay is exact, not only its outcome
+    assert {k: v for k, v in a.items() if k != "wall_s"} == {k: v for k, v in b.items() if k != "wall_s"}
+
+
+def trajectory(env, scenario, driver):
+    """(outcome, the ego's position after every step, every observation) of one episode."""
+    env.load(scenario)
+    obs, _ = env.reset()
+    driver.start(env)
+    positions, observations = [], [obs]
+    while True:
+        obs, _, term, trunc, info = env.step(driver.act(env, obs))
+        positions.append(np.asarray(env.agent.position, dtype=float)[:2])
+        observations.append(obs)
+        if term or trunc:
+            return info["outcome"], np.array(positions), np.array(observations)
+
+
+def test_an_episode_is_bit_identical_whatever_ran_before(env):
+    """MetaDrive recycled vehicles between episodes with physics state left in them: the same driver on the same scene
+    diverged from the first step (1e-10 m) by metres, and qualification replays reproduced 0 of 3 avoidable T1
+    failures (LOG.md, 2026-11-10). Destroying objects instead (force_destroy) makes every episode start alike."""
+    assert env.config["force_destroy"]
+    a = sc.decode(np.random.default_rng(5).random(sc.DIM), SEED + 300, "T2")
+    first = trajectory(env, a, IDMDriver())
+    run_episode(env, sc.decode(np.random.default_rng(9).random(sc.DIM), SEED + 401, "T3"), IDMDriver())
+    again = trajectory(env, a, IDMDriver())
+    assert first[0] == again[0]
+    assert np.array_equal(first[1], again[1]) and np.array_equal(first[2], again[2])
 
 
 def test_lead_vehicle_is_where_and_when_the_scenario_says(env):

@@ -1857,3 +1857,26 @@ Every number comes from the run logs and the code. It reports attempt 3 with T1 
 - This is the within-process non-repeatability found on 2026-11-07.
 - On the frozen T1 driver, none of the qualification failures would count as discoveries. The adversary study (RQ1–RQ3) counts valid failures, so it depends on replays being repeatable.
 - Whatever MetaDrive carries between episodes has to be found and reset, or each episode and its replay must run from an identical simulator state, before any comparison run.
+
+## 2026-11-10 — episodes made repeatable: objects destroyed between episodes (environment v3)
+
+**Cause.** MetaDrive recycles vehicles and objects between episodes (`clear_objects` keeps them for reuse unless `force_destroy`). The recycled bodies carry physics state into the next episode. Probe (`probe_repeat.py`, session scratchpad), frozen SUT, T1 attempt-3 row 18, driven, then row 106, then row 18 twice more, in one environment:
+- **Recycling (as before):** the observations differ from step 1, and the ego from step 8 or 31 (1e-6 m), by up to 4.2 m.
+- **`force_destroy=True`:** the ego's position at every step and every observation are identical across all three drives.
+- **Fresh processes:** the first drive of the scene is identical in every process, with or without `force_destroy`. A destroyed-objects episode is therefore the same as that episode in a fresh process, whatever ran before.
+
+**Change** (`avtest/sim.py`):
+- `BASE_CONFIG` sets `force_destroy=True` for every environment: training, evaluation, qualification and the adversary study.
+- `ENV_TAG` is now `traffic50-60-v3`, so `evaluate_controller` files from the recycling environment (v2) are never continued or mixed with v3 results.
+- Cost: none measurable. 15 T2 episodes of the frozen SUT took 6.93 ms per step against 6.90 with recycling.
+
+**Tests** (`tests/test_sim.py`):
+- `test_episode_replays_identically` now requires the whole episode summary to be equal; it used to allow 1e-3 on the time-to-collision and edge margins.
+- New: `test_an_episode_is_bit_identical_whatever_ran_before`. An IDM driver drives a T2 scene, then a T3 scene, then the T2 scene again; positions and observations must be equal at every step.
+- With recycling switched back on, the same sequence differs by 6e-5 m and the observations differ, so the test catches the old behaviour.
+- 80 tests pass (27 simulator tests, 53 others).
+
+**The qualification failures from a clean state.**
+- The 3 avoidable T1 failures of attempt 3 (rows 18 off-road, 106 off-road, 396 stuck) all succeed when the SUT drives them in v3. Each replay is identical to its first drive.
+- These failures came from the state left by earlier episodes in the worker: d17 is marginal there, and a perturbation of 1e-10 m decided the outcome.
+- The attempt-3 result stands as measured (v2, `QUALIFICATION.md`). In v3 every scene has one outcome per driver, so a replay always reproduces it. The adversary study counts failures that happen from a clean start.

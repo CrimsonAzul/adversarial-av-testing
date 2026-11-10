@@ -99,6 +99,12 @@ BASE_CONFIG = dict(
     crash_vehicle_penalty=FAILURE_PENALTY, crash_object_penalty=FAILURE_PENALTY,
     crash_sidewalk_penalty=FAILURE_PENALTY, driving_reward=PROGRESS_REWARD_PER_M, speed_reward=SPEED_REWARD,
     use_lateral_reward=True,
+    # Destroy every object at the end of an episode instead of recycling it (v3, 2026-11-10). Recycled vehicles carried
+    # physics state into the next episode: the same driver on the same scene diverged from the first step (1e-10 m)
+    # by metres, so an outcome depended on what the process had run before, and a failure's replay reproduced it for
+    # 0 of 3 avoidable T1 failures and 2 of 15 on T2 in qualification attempt 3 (LOG.md, 2026-11-10). With it every
+    # episode is bit-identical to the same episode in a fresh process; the time per step is unchanged.
+    force_destroy=True,
     vehicle_config={"lidar": {"num_lasers": LIDAR_BEAMS, "distance": LIDAR_RANGE_M, "num_others": NEAREST_VEHICLES},
                     "lane_line_detector": {"num_lasers": LANE_LINE_BEAMS, "distance": LANE_LINE_RANGE_M},
                     "side_detector": {"num_lasers": ROAD_EDGE_BEAMS, "distance": ROAD_EDGE_RANGE_M}},
@@ -391,13 +397,14 @@ class EventManager(BaseManager):
 # Background traffic at 50-60 km/h on the 60 km/h road (drivers.TrafficIDMPolicy), from 2026-11-03 for every
 # driver: the road, not the driver, sets the traffic. Results logged before that date used MetaDrive's 30 km/h
 # traffic; ENV_TAG marks result files made with the current environment. v2 (2026-11-03): event objects report
-# their scripted speed after every step (EventManager.after_step).
+# their scripted speed after every step (EventManager.after_step). v3 (2026-11-10): objects are destroyed between
+# episodes (force_destroy in BASE_CONFIG), so every episode starts from the same simulator state.
 ROAD_TRAFFIC = True
 # Experimental, off unless AVTEST_TRAFFIC_GAP=1 (read by every worker process, which inherits the environment): background
 # cars change lanes only with a gap behind that grows with the closing speed of the vehicle coming up
 # (drivers.required_back_gap). Its results carry their own tag until the author decides whether to adopt it.
 TRAFFIC_GAP_CHECK = __import__("os").environ.get("AVTEST_TRAFFIC_GAP") == "1"
-ENV_TAG = "traffic50-60-v2-gapcheck" if TRAFFIC_GAP_CHECK else "traffic50-60-v2"
+ENV_TAG = "traffic50-60-v3-gapcheck" if TRAFFIC_GAP_CHECK else "traffic50-60-v3"
 
 
 class RoadTrafficManager(PGTrafficManager):
