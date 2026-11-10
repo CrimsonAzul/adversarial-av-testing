@@ -1780,3 +1780,26 @@ Validation so far (200-scene panel, all scenes counted), next to d17 and d18 at 
 | 10 | 78.5% | 89.7% | 80.0% | 79.0% |
 
 So far d19's validation is in the same range as d17 and d18. The dev panels decide.
+
+## 2026-11-10 — d19 (brake-hold teacher): no gain; every T3 attempt ends at 86–89%
+
+d19 finished at 00:20. Its best round, 12, was chosen on mean validation: 90.7%, with T3 validation 81.5%. Dev panels, `evaluate_controller --settings 0.3:off` (d19 round 12, sha256 `5bea06360e62…`):
+
+| Driver | T1 (499) | T2 (456) | T3 (405) |
+|---|---|---|---|
+| **d19 r12** (brake-hold teacher) | 99.8% (1 collision) | 95.8% (18 collisions) | **88.1%** (46 collisions) |
+| d18 r9 (object list) | 99.6% | 96.5% | 86.9% |
+| d17 r11 (brake weight 3) | 99.6% (Wilson 0.986, crash 0.4%) | 97.1% (Wilson 0.952) | 89.4% |
+| d16 r12 | 99.4% | 96.9% | 89.4% |
+| brake-hold teacher | 100% | 97.1% | 96.5% |
+| PD teacher | 100% | 98.0% | 95.6% |
+| d13 r7 (rule-assisted; not end-to-end) | 100% | 97.6% | 93.1% |
+
+- The hold did not carry over to the student. With the holding teacher, d19 is as far below it on T3 (8.4 points) as d16–d18 were below theirs.
+- T2 is 1.3 points below d17 and T1 0.2 points above, both within the run-to-run variation.
+
+**Where the end-to-end driver stands** after five attempts at the author's T3 requirement (≥ 94%):
+- imitation with more inputs (d18), with a learnable brake teacher (d19), and with brake weighting (d17);
+- PPO fine-tuning at two step sizes (r1, r2).
+
+Every end-to-end driver reaches 86.9–89.4% on T3, 95.8–97.1% on T2 and 99.4–99.8% on T1. None meets 94% on T3. Only T1 meets the gate's numbers on the dev panel (≥ 98%, Wilson ≥ 0.96, crashes ≤ 2%); T2 is below the 98% success the gate requires.
