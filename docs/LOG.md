@@ -1803,3 +1803,13 @@ d19 finished at 00:20. Its best round, 12, was chosen on mean validation: 90.7%,
 - PPO fine-tuning at two step sizes (r1, r2).
 
 Every end-to-end driver reaches 86.9–89.4% on T3, 95.8–97.1% on T2 and 99.4–99.8% on T1. None meets 94% on T3. Only T1 meets the gate's numbers on the dev panel (≥ 98%, Wilson ≥ 0.96, crashes ≤ 2%); T2 is below the 98% success the gate requires.
+
+**Qualification attempt 3** (author: "Yes, qualify d17").
+- Started at 01:28 with d17 round 11 (`runs/driver/d17/model_best_bc.zip`, sha256 `ec548f5347f8…`, controller `{"end_to_end": true}`).
+- New panels: seed 1003, 500 scenes per tier, tried in the order T3, T2, T1. The panel files were written before any episode ran.
+- 8 workers (attempt 1 used 4 and took about 2 h).
+- The run resumes in blocks of 20 scenes with the same command.
+
+    .venv\Scripts\python.exe -m scripts.qualify --model runs\driver\d17\model_best_bc.zip --attempt 3 --workers 8
+
+- Expected from the dev panels: T3 and T2 fail; T1 passes if d17 holds its dev-panel 99.6% (Wilson 0.986, crashes 0.4%) on the new panel.
