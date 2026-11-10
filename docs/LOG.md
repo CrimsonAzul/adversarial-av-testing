@@ -1821,3 +1821,17 @@ Every end-to-end driver reaches 86.9–89.4% on T3, 95.8–97.1% on T2 and 99.4�
 - Failures by event: obstacle 16, cut-in 15, lead brake 7. 24 of the 38 reproduced on replay.
 - d17 also completed 69 of the 118 scenes that no reference completed. These are not counted by the gate.
 - The author called 90% "pretty acceptable". The gate in DESIGN.md (≥ 98% / Wilson ≥ 0.96 / crashes ≤ 2%, first passing tier in the order T3, T2, T1) was declared before any qualification. Nothing was changed; the run continues with T2 and then T1.
+
+**Attempt 3, T2: FAIL** (finished at 02:50; T1 is running).
+- 440 of 455 reference-solvable scenes = **96.7%**, Wilson [0.946, 0.980]. Collisions or off-road on 3.3% (13 collisions, 2 off-road).
+- The dev panel gave 97.1%. d17 also completed 25 of the 45 scenes no reference completed.
+- The author's view before the result: "the test should be done on T2 if it succeeds". That is the declared tier rule; T2 did not pass, so the exam moved on to T1.
+
+**Beginner's guide** (author's request): `docs/How_the_Driver_Learns_and_Is_Tested.pdf`, 12 pages, LaTeX (MiKTeX `pdflatex`, TikZ diagrams). It explains to a reader with no AI background:
+- the simulator, scenes and tiers, and the 813 inputs and two outputs;
+- what a neural network is, and d17's network;
+- imitation of the teacher and DAgger;
+- validation, the four separate sets of scenes, scoring and the gate (including the Wilson bound);
+- the results so far, and the T3 attempts.
+
+Every number comes from the run logs and the code. It reports attempt 3 with T1 still running, and will be rebuilt with the T1 result. The source and build script are in the session scratchpad; the PDF is not committed.
